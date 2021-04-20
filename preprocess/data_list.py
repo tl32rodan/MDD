@@ -7,7 +7,7 @@ import random
 from PIL import Image
 import torch.utils.data as data
 import os
-import os.path
+import os.path as osp
 
 
 def make_dataset(image_list, labels):
@@ -22,15 +22,19 @@ def make_dataset(image_list, labels):
     return images
 
 
-def pil_loader(path):
+def pil_loader(path, root_folder=None):
     # open path as file to avoid ResourceWarning (https://github.com/python-pillow/Pillow/issues/835)
+    if not (root_folder is None):
+        path = osp.join(root_folder, path)
     with open(path, 'rb') as f:
         with Image.open(f) as img:
             return img.convert('RGB')
 
 
-def accimage_loader(path):
+def accimage_loader(path, root_folder=None):
     import accimage
+    if not (root_folder is None):
+        path = osp.join(root_folder, path)
     try:
         return accimage.Image(path)
     except IOError:
@@ -38,12 +42,12 @@ def accimage_loader(path):
         return pil_loader(path)
 
 
-def default_loader(path):
+def default_loader(path, root_folder=None):
     #from torchvision import get_image_backend
     #if get_image_backend() == 'accimage':
     #    return accimage_loader(path)
     #else:
-        return pil_loader(path)
+        return pil_loader(path, root_folder=root_folder)
 
 
 class ImageList(object):
@@ -68,7 +72,7 @@ class ImageList(object):
     """
 
     def __init__(self, image_list, labels=None, transform=None, target_transform=None,
-                 loader=default_loader):
+                 loader=default_loader, root_folder='./data'):
         imgs = make_dataset(image_list, labels)
         if len(imgs) == 0:
             raise(RuntimeError("Found 0 images in subfolders of: " + root + "\n"
@@ -78,6 +82,7 @@ class ImageList(object):
         self.transform = transform
         self.target_transform = target_transform
         self.loader = loader
+        self.root_folder=root_folder
 
     def __getitem__(self, index):
         """
@@ -87,7 +92,7 @@ class ImageList(object):
             tuple: (image, target) where target is class_index of the target class.
         """
         path, target = self.imgs[index]
-        img = self.loader(path)
+        img = self.loader(path, root_folder=self.root_folder)
         if self.transform is not None:
             img = self.transform(img)
         if self.target_transform is not None:

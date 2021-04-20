@@ -1,4 +1,6 @@
 import tqdm
+import os
+import os.path as osp
 import argparse
 from utils.config import Config
 from torch.autograd import Variable
@@ -87,6 +89,7 @@ def train(model_instance, train_source_loader, train_target_loader, test_target_
             if iter_num % eval_interval == 0 and iter_num != 0:
                 eval_result = evaluate(model_instance, test_target_loader)
                 print(eval_result)
+                torch.save(model_instance.c_net, osp.join(args.save, str(int(eval_result['accuracy']))+'.pth'))
             iter_num += 1
             total_progress_bar.update(1)
         epoch += 1
@@ -106,19 +109,32 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str, help='all sets of configuration parameters',
-                        default='/home/liujintao/app/transfer-lib/config/dann.yml')
-    parser.add_argument('--dataset', default='Office-31', type=str,
+                        default='../config/dann.yml')
+    parser.add_argument('--dataset', default='VIS_dataset', type=str,
                         help='which dataset')
+    parser.add_argument('--root_folder', default='./data', type=str,
+                        help='root folder of dataset')
     parser.add_argument('--src_address', default=None, type=str,
                         help='address of image list of source dataset')
     parser.add_argument('--tgt_address', default=None, type=str,
                         help='address of image list of target dataset')
+    parser.add_argument('--tgt_test_address', default=None, type=str,
+                        help='address of image list of target testing dataset')
+    parser.add_argument('--save', default='./save/0000_0000', type=str,
+                        help='checkpoint saving directory')
+    parser.add_argument('--num_classes', default=8, type=int,
+                        help='number of classes')
+    parser.add_argument('--batch_size', default=32, type=int,
+                        help='Batch size')
     args = parser.parse_args()
 
-    cfg = Config(args.config)
+    if not osp.exists(args.save):
+        os.system('mkdir -p '+args.save)
 
-    source_file = args.src_address
-    target_file = args.tgt_address
+    cfg = Config(args.config)
+    source_file = osp.join(args.root_folder, args.src_address)
+    target_file = osp.join(args.root_folder, args.tgt_address)
+    target_test_file = osp.join(args.root_folder, args.tgt_test_address)
 
 
     if args.dataset == 'Office-31':
@@ -126,24 +142,34 @@ if __name__ == '__main__':
         width = 1024
         srcweight = 4
         is_cen = False
+        resize_size = 256
+        crop_size = 224
     elif args.dataset == 'Office-Home':
         class_num = 65
         width = 2048
         srcweight = 2
         is_cen = False
-
+        resize_size = 256
+        crop_size = 224
         # Another choice for Office-home:
         # width = 1024
         # srcweight = 3
         # is_cen = True
+    elif args.dataset == 'VIS_dataset':
+        class_num = args.num_classes
+        width = 2048
+        srcweight = 2
+        is_cen = True
+        resize_size = 400
+        crop_size = 400
     else:
         width = -1
 
-    model_instance = MDD(base_net='ResNet50', width=width, use_gpu=True, class_num=class_num, srcweight=srcweight)
+    model_instance = MDD(base_net='ResNet101', width=width, use_gpu=True, class_num=class_num, srcweight=srcweight)
 
-    train_source_loader = load_images(source_file, batch_size=32, is_cen=is_cen)
-    train_target_loader = load_images(target_file, batch_size=32, is_cen=is_cen)
-    test_target_loader = load_images(target_file, batch_size=32, is_train=False)
+    train_source_loader = load_images(source_file, batch_size=args.batch_size, resize_size=resize_size, crop_size=crop_size, is_cen=is_cen, root_folder=args.root_folder)
+    train_target_loader = load_images(target_file, batch_size=args.batch_size, resize_size=resize_size, crop_size=crop_size, is_cen=is_cen, root_folder=args.root_folder)
+    test_target_loader = load_images(target_test_file, batch_size=4,  resize_size=resize_size, crop_size=crop_size, is_train=False, is_cen=is_cen, root_folder=args.root_folder)
 
     param_groups = model_instance.get_parameter_list()
     group_ratios = [group['lr'] for group in param_groups]
