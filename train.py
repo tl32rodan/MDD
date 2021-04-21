@@ -144,6 +144,13 @@ if __name__ == '__main__':
         is_cen = False
         resize_size = 256
         crop_size = 224
+    elif args.dataset == 'VisDA':
+        class_num = 12
+        width = 1024
+        srcweight = 3
+        is_cen = True
+        resize_size = 256
+        crop_size = 224
     elif args.dataset == 'Office-Home':
         class_num = 65
         width = 2048
@@ -165,7 +172,7 @@ if __name__ == '__main__':
     else:
         width = -1
 
-    model_instance = MDD(base_net='ResNet101', width=width, use_gpu=True, class_num=class_num, srcweight=srcweight)
+    model_instance = MDD(base_net='ResNet50', width=width, use_gpu=True, class_num=class_num, srcweight=srcweight)
 
     train_source_loader = load_images(source_file, batch_size=args.batch_size, resize_size=resize_size, crop_size=crop_size, is_cen=is_cen, root_folder=args.root_folder)
     train_target_loader = load_images(target_file, batch_size=args.batch_size, resize_size=resize_size, crop_size=crop_size, is_cen=is_cen, root_folder=args.root_folder)
