@@ -88,8 +88,8 @@ def train(model_instance, train_source_loader, train_target_loader, test_target_
             # val
             if iter_num % eval_interval == 0 and iter_num != 0:
                 eval_result = evaluate(model_instance, test_target_loader)
-                print(eval_result)
-                torch.save(model_instance.c_net, osp.join(args.save, str(int(eval_result['accuracy']))+'.pth'))
+                print(eval_result['accuracy'].item())
+                torch.save(model_instance.c_net.state_dict(), osp.join(args.save, str(int(eval_result['accuracy'].item()))+'.pth'))
             iter_num += 1
             total_progress_bar.update(1)
         epoch += 1
