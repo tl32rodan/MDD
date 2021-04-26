@@ -46,8 +46,8 @@ class MDDNet(nn.Module):
 
         ## collect parameters
         self.parameter_list = [{"params":self.base_network.parameters(), "lr":0.1},
-                            {"params":self.bottleneck_layer.parameters(), "lr":1},
-                        {"params":self.classifier_layer.parameters(), "lr":1},
+                               {"params":self.bottleneck_layer.parameters(), "lr":1},
+                               {"params":self.classifier_layer.parameters(), "lr":1},
                                {"params":self.classifier_layer_2.parameters(), "lr":1}]
     def forward(self, inputs):
         features = self.base_network(inputs)

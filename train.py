@@ -5,6 +5,8 @@ import argparse
 from utils.config import Config
 from torch.autograd import Variable
 import torch
+from sklearn.metrics import confusion_matrix
+import numpy as np
 
 
 class INVScheduler(object):
@@ -23,12 +25,13 @@ class INVScheduler(object):
 
 
 #==============eval
-def evaluate(model_instance, input_loader):
+def evaluate(model_instance, input_loader, num_classes=12):
     ori_train_state = model_instance.is_train
     model_instance.set_train(False)
     num_iter = len(input_loader)
     iter_test = iter(input_loader)
     first_test = True
+    label_indices = np.arange(num_classes)
 
     for i in range(num_iter):
         data = iter_test.next()
@@ -53,13 +56,17 @@ def evaluate(model_instance, input_loader):
             all_labels = torch.cat((all_labels, labels), 0)
 
     _, predict = torch.max(all_probs, 1)
-    accuracy = torch.sum(torch.squeeze(predict).float() == all_labels) / float(all_labels.size()[0])
+    cmx = confusion_matrix(all_labels.cpu(), predict.cpu(), labels=label_indices)
+    print(cmx)
+    c = np.diag(cmx)/np.sum(cmx, 1)
+    print(c, np.sum(c)/num_classes)
+    accuracy = torch.sum(torch.squeeze(predict) == all_labels) / float(all_labels.size()[0])
 
     model_instance.set_train(ori_train_state)
     return {'accuracy':accuracy}
 
-def train(model_instance, train_source_loader, train_target_loader, test_target_loader,
-          group_ratios, max_iter, optimizer, lr_scheduler, eval_interval):
+def train(model_instance, train_source_loader, train_target_loader, test_source_loader, test_target_loader,
+          group_ratios, max_iter, optimizer, lr_scheduler, eval_interval, num_classes=12):
     model_instance.set_train(True)
     print("start train...")
     iter_num = 0
@@ -87,7 +94,13 @@ def train(model_instance, train_source_loader, train_target_loader, test_target_
 
             # val
             if iter_num % eval_interval == 0 and iter_num != 0:
-                eval_result = evaluate(model_instance, test_target_loader)
+                print("===================================")
+                print("Stest")
+                eval_result = evaluate(model_instance, test_source_loader, num_classes=num_classes)
+                print(eval_result['accuracy'].item())
+                print("-----------------------------------")
+                print("Ttest")
+                eval_result = evaluate(model_instance, test_target_loader, num_classes=num_classes)
                 print(eval_result['accuracy'].item())
                 torch.save(model_instance.c_net.state_dict(), osp.join(args.save, str(int(eval_result['accuracy'].item()))+'.pth'))
             iter_num += 1
@@ -118,6 +131,8 @@ if __name__ == '__main__':
                         help='address of image list of source dataset')
     parser.add_argument('--tgt_address', default=None, type=str,
                         help='address of image list of target dataset')
+    parser.add_argument('--src_test_address', default=None, type=str,
+                        help='address of image list of source testing dataset')
     parser.add_argument('--tgt_test_address', default=None, type=str,
                         help='address of image list of target testing dataset')
     parser.add_argument('--save', default='./save/0000_0000', type=str,
@@ -134,6 +149,7 @@ if __name__ == '__main__':
     cfg = Config(args.config)
     source_file = osp.join(args.root_folder, args.src_address)
     target_file = osp.join(args.root_folder, args.tgt_address)
+    source_test_file = osp.join(args.root_folder, args.src_test_address)
     target_test_file = osp.join(args.root_folder, args.tgt_test_address)
 
 
@@ -148,7 +164,7 @@ if __name__ == '__main__':
         class_num = 12
         width = 1024
         srcweight = 3
-        is_cen = True
+        is_cen = False
         resize_size = 256
         crop_size = 224
     elif args.dataset == 'Office-Home':
@@ -176,6 +192,7 @@ if __name__ == '__main__':
 
     train_source_loader = load_images(source_file, batch_size=args.batch_size, resize_size=resize_size, crop_size=crop_size, is_cen=is_cen, root_folder=args.root_folder)
     train_target_loader = load_images(target_file, batch_size=args.batch_size, resize_size=resize_size, crop_size=crop_size, is_cen=is_cen, root_folder=args.root_folder)
+    test_source_loader = load_images(source_test_file, batch_size=4,  resize_size=resize_size, crop_size=crop_size, is_train=False, is_cen=is_cen, root_folder=args.root_folder)
     test_target_loader = load_images(target_test_file, batch_size=4,  resize_size=resize_size, crop_size=crop_size, is_train=False, is_cen=is_cen, root_folder=args.root_folder)
 
     param_groups = model_instance.get_parameter_list()
@@ -191,6 +208,6 @@ if __name__ == '__main__':
                                 decay_rate=cfg.lr_scheduler.decay_rate,
                                 init_lr=cfg.init_lr)
 
-    train(model_instance, train_source_loader, train_target_loader, test_target_loader, group_ratios,
-          max_iter=100000, optimizer=optimizer, lr_scheduler=lr_scheduler, eval_interval=1000)
+    train(model_instance, train_source_loader, train_target_loader, test_source_loader, test_target_loader, group_ratios,
+          max_iter=100000, optimizer=optimizer, lr_scheduler=lr_scheduler, eval_interval=1000, num_classes=class_num)
 
