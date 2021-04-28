@@ -75,8 +75,8 @@ class MDDNet(nn.Module):
         if self.use_bottleneck:
             features = self.bottleneck_layer(features)
         #features_adv = self.grl_layer.apply(features)
-        #features_adv = self.grl_layer(features)
-        features_adv = features
+        features_adv = self.grl_layer(features)
+        #features_adv = features
         outputs_adv = self.classifier_layer_2(features_adv)
         
         outputs = self.classifier_layer(features)
