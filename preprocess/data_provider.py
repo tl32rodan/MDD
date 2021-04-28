@@ -41,7 +41,8 @@ def load_images(images_file_path, batch_size, resize_size=256, is_train=True, cr
             transforms.ToTensor(),
             normalize])
         images = ImageList(open(images_file_path).readlines(), transform=transformer, root_folder=root_folder)
-        images_loader = util_data.DataLoader(images, batch_size=batch_size, shuffle=False, num_workers=4)
+        #images_loader = util_data.DataLoader(images, batch_size=batch_size, shuffle=False, num_workers=4)
+        images_loader = util_data.DataLoader(images, batch_size=batch_size, shuffle=True, num_workers=4)
     else:
         if is_cen:
             transformer = transforms.Compose([

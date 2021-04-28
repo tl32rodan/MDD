@@ -25,10 +25,10 @@ class INVScheduler(object):
 
 
 #==============eval
-def evaluate(model_instance, input_loader, num_classes=12):
+def evaluate(model_instance, input_loader, num_classes=12, max_iter=None):
     ori_train_state = model_instance.is_train
     model_instance.set_train(False)
-    num_iter = len(input_loader)
+    num_iter = len(input_loader) if max_iter is None else max_iter
     iter_test = iter(input_loader)
     first_test = True
     label_indices = np.arange(num_classes)
@@ -38,13 +38,10 @@ def evaluate(model_instance, input_loader, num_classes=12):
         inputs = data[0]
         labels = data[1]
         if model_instance.use_gpu:
-            inputs = Variable(inputs.cuda())
-            labels = Variable(labels.cuda())
-        else:
-            inputs = Variable(inputs)
-            labels = Variable(labels)
+            inputs = inputs.cuda()
+            labels = labels.cuda()
+        
         probabilities = model_instance.predict(inputs)
-
         probabilities = probabilities.data.float()
         labels = labels.data.float()
         if first_test:
@@ -59,16 +56,22 @@ def evaluate(model_instance, input_loader, num_classes=12):
     cmx = confusion_matrix(all_labels.cpu(), predict.cpu(), labels=label_indices)
     print(cmx)
     c = np.diag(cmx)/np.sum(cmx, 1)
-    print(c, np.sum(c)/num_classes)
+    print(c)
+    print('avg_cls_acc = ', np.sum(c)/num_classes)
     accuracy = torch.sum(torch.squeeze(predict) == all_labels) / float(all_labels.size()[0])
+    print('overall_acc = ', accuracy.item())
 
     model_instance.set_train(ori_train_state)
     return {'accuracy':accuracy}
 
 def train(model_instance, train_source_loader, train_target_loader, test_source_loader, test_target_loader,
-          group_ratios, max_iter, optimizer, lr_scheduler, eval_interval, num_classes=12):
+          #group_ratios, max_iter, optimizer, lr_scheduler, eval_interval, num_classes=12):
+          max_iter, eval_interval, num_classes=12):
     model_instance.set_train(True)
     print("start train...")
+
+    optimizer = torch.optim.SGD(list(model_instance.c_net.parameters()), lr=0.001, momentum=0.9 ,weight_decay=0.0005, nesterov=True)
+    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 10, 0.8)
     iter_num = 0
     epoch = 0
     total_progress_bar = tqdm.tqdm(desc='Train iter', total=max_iter)
@@ -77,32 +80,36 @@ def train(model_instance, train_source_loader, train_target_loader, test_source_
                 zip(train_source_loader, train_target_loader),
                 total=min(len(train_source_loader), len(train_target_loader)),
                 desc='Train epoch = {}'.format(epoch), ncols=80, leave=False):
+            
+            model_instance.set_train(True)
             inputs_source, labels_source = datas
             inputs_target, labels_target = datat
 
-            optimizer = lr_scheduler.next_optimizer(group_ratios, optimizer, iter_num/5)
+            #optimizer = lr_scheduler.next_optimizer(group_ratios, optimizer, iter_num/5)
             optimizer.zero_grad()
 
             if model_instance.use_gpu:
-                inputs_source, inputs_target, labels_source = Variable(inputs_source).cuda(), Variable(
-                    inputs_target).cuda(), Variable(labels_source).cuda()
-            else:
-                inputs_source, inputs_target, labels_source = Variable(inputs_source), Variable(
-                    inputs_target), Variable(labels_source)
-
-            train_batch(model_instance, inputs_source, labels_source, inputs_target, optimizer)
-
+                inputs_source, inputs_target, labels_source = inputs_source.cuda(), inputs_target.cuda(), labels_source.cuda()
+            
+            cls_loss, dis_loss = train_batch(model_instance, inputs_source, labels_source, inputs_target, optimizer)
+            #if cls_loss > 10 or dis_loss > 10:
+            #    print('Classifier loss = ', cls_loss, ' ; Discrepency loss = ', dis_loss)
+            #print('Classifier loss = ', cls_loss, ' ; Discrepency loss = ', dis_loss)
+            #print('lr = ', optimizer.param_groups[0]['lr'])
             # val
             if iter_num % eval_interval == 0 and iter_num != 0:
                 print("===================================")
+                print('lr = ', optimizer.param_groups[0]['lr'])
+                print('Classifier loss = ', cls_loss, ' ; Discrepency loss = ', dis_loss)
                 print("Stest")
                 eval_result = evaluate(model_instance, test_source_loader, num_classes=num_classes)
-                print(eval_result['accuracy'].item())
                 print("-----------------------------------")
                 print("Ttest")
                 eval_result = evaluate(model_instance, test_target_loader, num_classes=num_classes)
-                print(eval_result['accuracy'].item())
-                torch.save(model_instance.c_net.state_dict(), osp.join(args.save, str(int(eval_result['accuracy'].item()))+'.pth'))
+                torch.save(model_instance.c_net.state_dict(), osp.join(args.save, str(int(eval_result['accuracy'].item()*100))+'.pth'))
+
+                lr_scheduler.step()
+
             iter_num += 1
             total_progress_bar.update(1)
         epoch += 1
@@ -112,9 +119,13 @@ def train(model_instance, train_source_loader, train_target_loader, test_source_
 
 def train_batch(model_instance, inputs_source, labels_source, inputs_target, optimizer):
     inputs = torch.cat((inputs_source, inputs_target), dim=0)
-    total_loss = model_instance.get_loss(inputs, labels_source)
+    classifier_loss, discrepency_loss = model_instance.get_loss(inputs, labels_source)
+    total_loss = classifier_loss + discrepency_loss
+    #total_loss = classifier_loss #+ discrepency_loss
     total_loss.backward()
     optimizer.step()
+
+    return classifier_loss.cpu().item(), discrepency_loss.cpu().item()
 
 if __name__ == '__main__':
     from model.MDD import MDD
@@ -141,6 +152,10 @@ if __name__ == '__main__':
                         help='number of classes')
     parser.add_argument('--batch_size', default=32, type=int,
                         help='Batch size')
+    parser.add_argument('--reuse_ckpt', default=False, type=bool,
+                        help='To reuse checkpoint or not')
+    parser.add_argument('--reuse_ckpt_weight', default=None, type=int,
+                        help='The weight to use')
     args = parser.parse_args()
 
     if not osp.exists(args.save):
@@ -163,7 +178,7 @@ if __name__ == '__main__':
     elif args.dataset == 'VisDA':
         class_num = 12
         width = 1024
-        srcweight = 3
+        srcweight = 2
         is_cen = False
         resize_size = 256
         crop_size = 224
@@ -189,25 +204,31 @@ if __name__ == '__main__':
         width = -1
 
     model_instance = MDD(base_net='ResNet50', width=width, use_gpu=True, class_num=class_num, srcweight=srcweight)
+   
+    if args.reuse_ckpt:
+        state_dict = torch.load(osp.join(args.save, args.reuse_ckpt_weight+'.pth'))
+        model_instance.load_state_dict(state_dict)
 
     train_source_loader = load_images(source_file, batch_size=args.batch_size, resize_size=resize_size, crop_size=crop_size, is_cen=is_cen, root_folder=args.root_folder)
     train_target_loader = load_images(target_file, batch_size=args.batch_size, resize_size=resize_size, crop_size=crop_size, is_cen=is_cen, root_folder=args.root_folder)
-    test_source_loader = load_images(source_test_file, batch_size=4,  resize_size=resize_size, crop_size=crop_size, is_train=False, is_cen=is_cen, root_folder=args.root_folder)
-    test_target_loader = load_images(target_test_file, batch_size=4,  resize_size=resize_size, crop_size=crop_size, is_train=False, is_cen=is_cen, root_folder=args.root_folder)
+    test_source_loader = load_images(source_test_file, batch_size=16,  resize_size=resize_size, crop_size=crop_size, is_train=False, is_cen=is_cen, root_folder=args.root_folder)
+    test_target_loader = load_images(target_test_file, batch_size=16,  resize_size=resize_size, crop_size=crop_size, is_train=False, is_cen=is_cen, root_folder=args.root_folder)
 
-    param_groups = model_instance.get_parameter_list()
-    group_ratios = [group['lr'] for group in param_groups]
+    #param_groups = model_instance.get_parameter_list()
+    #group_ratios = [group['lr'] for group in param_groups]
 
 
-    assert cfg.optim.type == 'sgd', 'Optimizer type not supported!'
+    #assert cfg.optim.type == 'sgd', 'Optimizer type not supported!'
 
-    optimizer = torch.optim.SGD(param_groups, **cfg.optim.params)
+    #optimizer = torch.optim.SGD(param_groups, **cfg.optim.params)
 
-    assert cfg.lr_scheduler.type == 'inv', 'Scheduler type not supported!'
-    lr_scheduler = INVScheduler(gamma=cfg.lr_scheduler.gamma,
-                                decay_rate=cfg.lr_scheduler.decay_rate,
-                                init_lr=cfg.init_lr)
+    #assert cfg.lr_scheduler.type == 'inv', 'Scheduler type not supported!'
+    #lr_scheduler = INVScheduler(gamma=cfg.lr_scheduler.gamma,
+    #                            decay_rate=cfg.lr_scheduler.decay_rate,
+    #                            init_lr=cfg.init_lr)
 
-    train(model_instance, train_source_loader, train_target_loader, test_source_loader, test_target_loader, group_ratios,
-          max_iter=100000, optimizer=optimizer, lr_scheduler=lr_scheduler, eval_interval=1000, num_classes=class_num)
+    #train(model_instance, train_source_loader, train_target_loader, test_source_loader, test_target_loader, group_ratios,
+    #      max_iter=300000, optimizer=optimizer, lr_scheduler=lr_scheduler, eval_interval=500, num_classes=class_num)
+    train(model_instance, train_source_loader, train_target_loader, test_source_loader, test_target_loader,
+          max_iter=300000, eval_interval=125, num_classes=class_num)
 

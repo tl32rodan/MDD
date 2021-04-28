@@ -4,18 +4,37 @@ import torch.nn.functional as F
 import torch
 import numpy as np
 
-class GradientReverseLayer(torch.autograd.Function):
-    """
-    Implement the gradient reversal layer for the convenience of domain adaptation neural network.
-    The forward part is the identity function while the backward part is the negative function.
-    """
-    @staticmethod
-    def forward(ctx, inputs):
-        return inputs.view_as(inputs)
+class GradientReverseLayer(nn.Module):
+    def __init__(self, iter_num=0, alpha=1.0, low_value=0.0, high_value=0.1, max_iter=1000.0):
+        super(GradientReverseLayer, self).__init__()
+        self.iter_num = iter_num
+        self.alpha = alpha
+        self.low_value = low_value
+        self.high_value = high_value
+        self.max_iter = max_iter
 
-    @staticmethod
-    def backward(ctx, grad_output):
-        return grad_output.neg()
+    def forward(self, input):
+        self.iter_num += 1
+        output = input * 1.0
+        return output
+
+    def backward(self, grad_output):
+        self.coeff = np.float(
+            2.0 * (self.high_value - self.low_value) / (1.0 + np.exp(-self.alpha * self.iter_num / self.max_iter)) - (
+                        self.high_value - self.low_value) + self.low_value)
+        return -self.coeff * grad_output
+#class GradientReverseLayer(torch.autograd.Function):
+#    """
+#    Implement the gradient reversal layer for the convenience of domain adaptation neural network.
+#    The forward part is the identity function while the backward part is the negative function.
+#    """
+#    @staticmethod
+#    def forward(ctx, inputs):
+#        return inputs.view_as(inputs)
+#
+#    @staticmethod
+#    def backward(ctx, grad_output):
+#       return grad_output.neg()
 
 class MDDNet(nn.Module):
     def __init__(self, base_net='ResNet50', use_bottleneck=True, bottleneck_dim=1024, width=1024, class_num=31):
@@ -24,14 +43,16 @@ class MDDNet(nn.Module):
         self.base_network = backbone.network_dict[base_net]()
         self.use_bottleneck = use_bottleneck
         self.grl_layer = GradientReverseLayer()
+        
         self.bottleneck_layer_list = [nn.Linear(self.base_network.output_num(), bottleneck_dim), nn.BatchNorm1d(bottleneck_dim), nn.ReLU(), nn.Dropout(0.5)]
         self.bottleneck_layer = nn.Sequential(*self.bottleneck_layer_list)
-        self.classifier_layer_list = [nn.Linear(bottleneck_dim, width), nn.ReLU(), nn.Dropout(0.5),
-                                        nn.Linear(width, class_num)]
+        
+        self.classifier_layer_list = [nn.Linear(bottleneck_dim, width), nn.BatchNorm1d(width), nn.ReLU(), nn.Linear(width, class_num)]
         self.classifier_layer = nn.Sequential(*self.classifier_layer_list)
-        self.classifier_layer_2_list = [nn.Linear(bottleneck_dim, width), nn.ReLU(), nn.Dropout(0.5),
-                                        nn.Linear(width, class_num)]
+        
+        self.classifier_layer_2_list = [nn.Linear(bottleneck_dim, width), nn.BatchNorm1d(width), nn.ReLU(), nn.Linear(width, class_num)]
         self.classifier_layer_2 = nn.Sequential(*self.classifier_layer_2_list)
+        
         self.softmax = nn.Softmax(dim=1)
 
         ## initialization
@@ -45,15 +66,17 @@ class MDDNet(nn.Module):
 
 
         ## collect parameters
-        self.parameter_list = [{"params":self.base_network.parameters(), "lr":0.1},
-                               {"params":self.bottleneck_layer.parameters(), "lr":1},
-                               {"params":self.classifier_layer.parameters(), "lr":1},
-                               {"params":self.classifier_layer_2.parameters(), "lr":1}]
+        #self.parameter_list = [{"params":self.base_network.parameters(), "lr":0.1},
+        #                       {"params":self.bottleneck_layer.parameters(), "lr":1},
+        #                       {"params":self.classifier_layer.parameters(), "lr":1},
+        #                       {"params":self.classifier_layer_2.parameters(), "lr":1}]
     def forward(self, inputs):
         features = self.base_network(inputs)
         if self.use_bottleneck:
             features = self.bottleneck_layer(features)
-        features_adv = self.grl_layer.apply(features)
+        #features_adv = self.grl_layer.apply(features)
+        #features_adv = self.grl_layer(features)
+        features_adv = features
         outputs_adv = self.classifier_layer_2(features_adv)
         
         outputs = self.classifier_layer(features)
@@ -79,31 +102,33 @@ class MDD(object):
 
         _, outputs, _, outputs_adv = self.c_net(inputs)
 
-        classifier_loss = class_criterion(outputs.narrow(0, 0, labels_source.size(0)), labels_source)
+        classifier_loss = class_criterion(outputs[:labels_source.size(0)], labels_source)
 
         target_adv = outputs.max(1)[1]
-        target_adv_src = target_adv.narrow(0, 0, labels_source.size(0))
-        target_adv_tgt = target_adv.narrow(0, labels_source.size(0), inputs.size(0) - labels_source.size(0))
+        #print(target_adv)
+        target_adv_src = target_adv[:labels_source.size(0)]
+        target_adv_tgt = target_adv[labels_source.size(0):]
 
-        classifier_loss_adv_src = class_criterion(outputs_adv.narrow(0, 0, labels_source.size(0)), target_adv_src)
+        classifier_loss_adv_src = class_criterion(outputs_adv[:labels_source.size(0)], target_adv_src)
 
-        logloss_tgt = torch.log(1 - F.softmax(outputs_adv.narrow(0, labels_source.size(0), inputs.size(0) - labels_source.size(0)), dim = 1))
+        logloss_tgt = torch.log(1 - F.softmax(outputs_adv[labels_source.size(0):], dim=1))
         classifier_loss_adv_tgt = F.nll_loss(logloss_tgt, target_adv_tgt)
+        #loss_tgt = 1 - F.softmax(outputs_adv[labels_source.size(0):], dim=1)
+        #classifier_loss_adv_tgt = F.nll_loss(loss_tgt, target_adv_tgt)
 
-        transfer_loss = self.srcweight * classifier_loss_adv_src + classifier_loss_adv_tgt
-
+        #transfer_loss = self.srcweight*classifier_loss_adv_src + classifier_loss_adv_tgt
+        transfer_loss = self.srcweight*classifier_loss_adv_src + classifier_loss_adv_tgt
+        #print('\t classifier_loss_adv_src = ',classifier_loss_adv_src.cpu().item(), ' ; classifier_loss_adv_tgt = ', classifier_loss_adv_tgt.cpu().item())
         self.iter_num += 1
 
-        total_loss = classifier_loss + transfer_loss
-
-        return total_loss
+        return classifier_loss, transfer_loss
 
     def predict(self, inputs):
         _, _, softmax_outputs,_= self.c_net(inputs)
         return softmax_outputs
 
     def get_parameter_list(self):
-        return self.c_net.parameter_list
+        return self.c_net.parameters()
 
     def set_train(self, mode):
         self.c_net.train(mode)
