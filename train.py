@@ -153,6 +153,10 @@ if __name__ == '__main__':
                         help='number of classes')
     parser.add_argument('--batch_size', default=32, type=int,
                         help='Batch size')
+    parser.add_argument('--lambda_', default=5e-2, type=float,
+                        help='coefficient of gradient passed by GradientReversal')
+    parser.add_argument('--srcweight', default=None, type=int,
+                        help='source weight in MDD')
     parser.add_argument('--reuse_ckpt', default=False, type=bool,
                         help='To reuse checkpoint or not')
     parser.add_argument('--reuse_ckpt_weight', default=None, type=int,
@@ -204,7 +208,10 @@ if __name__ == '__main__':
     else:
         width = -1
 
-    model_instance = MDD(base_net='ResNet50', width=width, use_gpu=True, class_num=class_num, srcweight=srcweight)
+    if not (args.srcweight is None):
+        srcweight = args.srcweight
+    #model_instance = MDD(base_net='ResNet50', width=width, use_gpu=True, class_num=class_num, srcweight=srcweight)
+    model_instance = MDD(base_net='ResNet101', width=width, use_gpu=True, class_num=class_num, srcweight=srcweight, lambda_=args.lambda_)
    
     if args.reuse_ckpt:
         state_dict = torch.load(osp.join(args.save, args.reuse_ckpt_weight+'.pth'))

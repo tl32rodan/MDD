@@ -4,31 +4,6 @@ import torch.nn.functional as F
 import torch
 import numpy as np
 
-class GradientReverseLayer(nn.Module):
-    def __init__(self, iter_num=0, alpha=1.0, low_value=0.0, high_value=0.1, max_iter=1000.0):
-        super(GradientReverseLayer, self).__init__()
-        self.iter_num = iter_num
-        self.alpha = alpha
-        self.low_value = low_value
-        self.high_value = high_value
-        self.max_iter = max_iter
-
-    def forward(self, input):
-        self.iter_num += 1
-        output = input * 1.0
-        self.coeff = np.float(
-            2.0 * (self.high_value - self.low_value) / (1.0 + np.exp(-self.alpha * self.iter_num / self.max_iter)) - (
-                   self.high_value - self.low_value) + self.low_value)
-        print('coef = ', self.coeff)
-
-        return output
-
-    def backward(self, grad_output):
-        self.coeff = np.float(
-            2.0 * (self.high_value - self.low_value) / (1.0 + np.exp(-self.alpha * self.iter_num / self.max_iter)) - (
-                        self.high_value - self.low_value) + self.low_value)
-        return -self.coeff * grad_output
-
 class GradientReversalFunction(torch.autograd.Function):
     """
     Gradient Reversal Layer from:
@@ -57,27 +32,15 @@ class GradientReversal(torch.nn.Module):
         return GradientReversalFunction.apply(x, self.lambda_)
         #return GradientReverseLayer()(x)
 
-#class GradientReverseLayer(torch.autograd.Function):
-#    """
-#    Implement the gradient reversal layer for the convenience of domain adaptation neural network.
-#    The forward part is the identity function while the backward part is the negative function.
-#    """
-#    @staticmethod
-#    def forward(ctx, inputs):
-#        return inputs.view_as(inputs)
-#
-#    @staticmethod
-#    def backward(ctx, grad_output):
-#       return grad_output.neg()
 
 class MDDNet(nn.Module):
-    def __init__(self, base_net='ResNet50', use_bottleneck=True, bottleneck_dim=1024, width=1024, class_num=31):
+    def __init__(self, base_net='ResNet50', use_bottleneck=True, bottleneck_dim=1024, width=1024, class_num=31, lambda_=5e-2):
         super(MDDNet, self).__init__()
         ## set base network
         self.base_network = backbone.network_dict[base_net]()
         self.use_bottleneck = use_bottleneck
         #self.grl_layer = GradientReverseLayer()
-        self.grl_layer = GradientReversal(lambda_=5e-2)
+        self.grl_layer = GradientReversal(lambda_=lambda_)
         
         self.bottleneck_layer_list = [nn.Linear(self.base_network.output_num(), bottleneck_dim), nn.BatchNorm1d(bottleneck_dim), nn.ReLU(), nn.Dropout(0.5)]
         self.bottleneck_layer = nn.Sequential(*self.bottleneck_layer_list)
@@ -119,8 +82,9 @@ class MDDNet(nn.Module):
         return features, outputs, softmax_outputs, outputs_adv
 
 class MDD(object):
-    def __init__(self, base_net='ResNet50', width=1024, class_num=31, use_bottleneck=True, use_gpu=True, srcweight=3):
-        self.c_net = MDDNet(base_net, use_bottleneck, width, width, class_num)
+    def __init__(self, base_net='ResNet50', width=1024, class_num=31, use_bottleneck=True, use_gpu=True, srcweight=3, lambda_=5e-2):
+        self.c_net = MDDNet(base_net, use_bottleneck, width, width, class_num, lambda_=lambda_)
+        self.c_net = nn.DataParallel(self.c_net)
 
         self.use_gpu = use_gpu
         self.is_train = False
