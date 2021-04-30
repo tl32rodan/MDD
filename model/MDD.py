@@ -16,6 +16,11 @@ class GradientReverseLayer(nn.Module):
     def forward(self, input):
         self.iter_num += 1
         output = input * 1.0
+        self.coeff = np.float(
+            2.0 * (self.high_value - self.low_value) / (1.0 + np.exp(-self.alpha * self.iter_num / self.max_iter)) - (
+                   self.high_value - self.low_value) + self.low_value)
+        print('coef = ', self.coeff)
+
         return output
 
     def backward(self, grad_output):
@@ -23,6 +28,35 @@ class GradientReverseLayer(nn.Module):
             2.0 * (self.high_value - self.low_value) / (1.0 + np.exp(-self.alpha * self.iter_num / self.max_iter)) - (
                         self.high_value - self.low_value) + self.low_value)
         return -self.coeff * grad_output
+
+class GradientReversalFunction(torch.autograd.Function):
+    """
+    Gradient Reversal Layer from:
+    Unsupervised Domain Adaptation by Backpropagation (Ganin & Lempitsky, 2015)
+    Forward pass is the identity function. In the backward pass,
+    the upstream gradients are multiplied by -lambda (i.e. gradient is reversed)
+    """
+
+    @staticmethod
+    def forward(ctx, x, lambda_):
+        ctx.lambda_ = lambda_
+        return x.clone()
+
+    @staticmethod
+    def backward(ctx, grads):
+        lambda_ = ctx.lambda_
+        lambda_ = grads.new_tensor(lambda_)
+        dx = -lambda_ * grads
+        return dx, None
+class GradientReversal(torch.nn.Module):
+    def __init__(self, lambda_=1):
+        super(GradientReversal, self).__init__()
+        self.lambda_ = lambda_
+
+    def forward(self, x):
+        return GradientReversalFunction.apply(x, self.lambda_)
+        #return GradientReverseLayer()(x)
+
 #class GradientReverseLayer(torch.autograd.Function):
 #    """
 #    Implement the gradient reversal layer for the convenience of domain adaptation neural network.
@@ -42,7 +76,8 @@ class MDDNet(nn.Module):
         ## set base network
         self.base_network = backbone.network_dict[base_net]()
         self.use_bottleneck = use_bottleneck
-        self.grl_layer = GradientReverseLayer()
+        #self.grl_layer = GradientReverseLayer()
+        self.grl_layer = GradientReversal(lambda_=5e-2)
         
         self.bottleneck_layer_list = [nn.Linear(self.base_network.output_num(), bottleneck_dim), nn.BatchNorm1d(bottleneck_dim), nn.ReLU(), nn.Dropout(0.5)]
         self.bottleneck_layer = nn.Sequential(*self.bottleneck_layer_list)
@@ -76,7 +111,6 @@ class MDDNet(nn.Module):
             features = self.bottleneck_layer(features)
         #features_adv = self.grl_layer.apply(features)
         features_adv = self.grl_layer(features)
-        #features_adv = features
         outputs_adv = self.classifier_layer_2(features_adv)
         
         outputs = self.classifier_layer(features)
@@ -111,7 +145,9 @@ class MDD(object):
 
         classifier_loss_adv_src = class_criterion(outputs_adv[:labels_source.size(0)], target_adv_src)
 
-        logloss_tgt = torch.log(1 - F.softmax(outputs_adv[labels_source.size(0):], dim=1))
+        #logloss_tgt = torch.log(1 - F.softmax(outputs_adv[labels_source.size(0):], dim=1))
+        # According to issue on github
+        logloss_tgt = torch.log(torch.clamp(1 - F.softmax(outputs_adv[labels_source.size(0):], dim=1), min=1e-15))
         classifier_loss_adv_tgt = F.nll_loss(logloss_tgt, target_adv_tgt)
         #loss_tgt = 1 - F.softmax(outputs_adv[labels_source.size(0):], dim=1)
         #classifier_loss_adv_tgt = F.nll_loss(loss_tgt, target_adv_tgt)
@@ -124,10 +160,13 @@ class MDD(object):
         return classifier_loss, transfer_loss
 
     def predict(self, inputs):
-        _, _, softmax_outputs,_= self.c_net(inputs)
-        return softmax_outputs
+        #_, _, softmax_outputs,_= self.c_net(inputs)
+        #return softmax_outputs
+        _, _, _ , outputs_adv= self.c_net(inputs)
+        return F.softmax(outputs_adv, dim=1)
 
     def get_parameter_list(self):
+        #return self.c_net.parameter_list
         return self.c_net.parameters()
 
     def set_train(self, mode):

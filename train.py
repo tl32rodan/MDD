@@ -26,6 +26,7 @@ class INVScheduler(object):
 
 #==============eval
 def evaluate(model_instance, input_loader, num_classes=12, max_iter=None):
+    np.set_printoptions(linewidth=200)
     ori_train_state = model_instance.is_train
     model_instance.set_train(False)
     num_iter = len(input_loader) if max_iter is None else max_iter
@@ -230,5 +231,5 @@ if __name__ == '__main__':
     #train(model_instance, train_source_loader, train_target_loader, test_source_loader, test_target_loader, group_ratios,
     #      max_iter=300000, optimizer=optimizer, lr_scheduler=lr_scheduler, eval_interval=500, num_classes=class_num)
     train(model_instance, train_source_loader, train_target_loader, test_source_loader, test_target_loader,
-          max_iter=300000, eval_interval=125, num_classes=class_num)
+          max_iter=300000, eval_interval=500, num_classes=class_num)
 
