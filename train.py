@@ -44,7 +44,7 @@ def evaluate(model_instance, input_loader, num_classes=12, max_iter=None):
         
         probabilities = model_instance.predict(inputs)
         probabilities = probabilities.data.float()
-        labels = labels.data.float()
+        #labels = labels.data.float()
         if first_test:
             all_probs = probabilities
             all_labels = labels
@@ -59,7 +59,7 @@ def evaluate(model_instance, input_loader, num_classes=12, max_iter=None):
     c = np.diag(cmx)/np.sum(cmx, 1)
     print(c)
     print('avg_cls_acc = ', np.sum(c)/num_classes)
-    accuracy = torch.sum(torch.squeeze(predict) == all_labels) / float(all_labels.size()[0])
+    accuracy = torch.sum(torch.squeeze(predict) == all_labels).float() / float(all_labels.size()[0])
     print('overall_acc = ', accuracy.item())
 
     model_instance.set_train(ori_train_state)
