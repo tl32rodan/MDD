@@ -67,7 +67,7 @@ def evaluate(model_instance, input_loader, num_classes=12, max_iter=None):
 
 def train(model_instance, train_source_loader, train_target_loader, test_source_loader, test_target_loader,
           #group_ratios, max_iter, optimizer, lr_scheduler, eval_interval, num_classes=12):
-          max_iter, eval_interval, num_classes=12):
+          max_iter, eval_interval, num_classes=12, use_ssda=False, train_labeled_target_loader=None):
     model_instance.set_train(True)
     print("start train...")
 
@@ -76,23 +76,44 @@ def train(model_instance, train_source_loader, train_target_loader, test_source_
     iter_num = 0
     epoch = 0
     total_progress_bar = tqdm.tqdm(desc='Train iter', total=max_iter)
+
     while True:
-        for (datas, datat) in tqdm.tqdm(
-                zip(train_source_loader, train_target_loader),
-                total=min(len(train_source_loader), len(train_target_loader)),
+        if use_ssda:
+            all_loaders = zip(train_source_loader, train_labeled_target_loader, train_target_loader)
+            total_len = min(len(train_source_loader), len(train_target_loader), len(train_labeled_target_loader))
+        else:
+            all_loaders = zip(train_source_loader, train_target_loader)
+            total_len = min(len(train_source_loader), len(train_target_loader))
+
+        for data_tuple in tqdm.tqdm(
+                all_loaders,
+                total=total_len,
                 desc='Train epoch = {}'.format(epoch), ncols=80, leave=False):
-            
             model_instance.set_train(True)
+            
+            if use_ssda:
+                datas, datat_l, datat = data_tuple
+                inputs_target_l, labels_target_l = datat_l
+            else:
+                datas, datat = data_tuple
+
             inputs_source, labels_source = datas
-            inputs_target, labels_target = datat
+            inputs_target, _ = datat
 
             #optimizer = lr_scheduler.next_optimizer(group_ratios, optimizer, iter_num/5)
             optimizer.zero_grad()
+            
+            if use_ssda:
+                inputs = torch.cat((inputs_source, inputs_target_l, inputs_target), dim=0)
+                cls_gt = torch.cat((labels_source, labels_target_l), dim=0)
+            else:
+                inputs = torch.cat((inputs_source, inputs_target), dim=0)
+                cls_gt = labels_source
 
             if model_instance.use_gpu:
-                inputs_source, inputs_target, labels_source = inputs_source.cuda(), inputs_target.cuda(), labels_source.cuda()
+                inputs, cls_gt = inputs.cuda(), cls_gt.cuda()
             
-            cls_loss, dis_loss = train_batch(model_instance, inputs_source, labels_source, inputs_target, optimizer)
+            cls_loss, dis_loss = train_batch(model_instance, inputs, cls_gt, optimizer, len_source=len(inputs_source))
             #if cls_loss > 10 or dis_loss > 10:
             #    print('Classifier loss = ', cls_loss, ' ; Discrepency loss = ', dis_loss)
             #print('Classifier loss = ', cls_loss, ' ; Discrepency loss = ', dis_loss)
@@ -118,11 +139,9 @@ def train(model_instance, train_source_loader, train_target_loader, test_source_
             break
     print('finish train')
 
-def train_batch(model_instance, inputs_source, labels_source, inputs_target, optimizer):
-    inputs = torch.cat((inputs_source, inputs_target), dim=0)
-    classifier_loss, discrepency_loss = model_instance.get_loss(inputs, labels_source)
+def train_batch(model_instance, inputs, cls_gt, optimizer, len_source=-1):
+    classifier_loss, discrepency_loss = model_instance.get_loss(inputs, cls_gt, len_source=len_source)
     total_loss = classifier_loss + discrepency_loss
-    #total_loss = classifier_loss #+ discrepency_loss
     total_loss.backward()
     optimizer.step()
 
@@ -143,6 +162,8 @@ if __name__ == '__main__':
                         help='address of image list of source dataset')
     parser.add_argument('--tgt_address', default=None, type=str,
                         help='address of image list of target dataset')
+    parser.add_argument('--labeled_tgt_address', default=None, type=str,
+                        help='For Semi DA ; address of labeled image list of target dataset')
     parser.add_argument('--src_test_address', default=None, type=str,
                         help='address of image list of source testing dataset')
     parser.add_argument('--tgt_test_address', default=None, type=str,
@@ -153,6 +174,8 @@ if __name__ == '__main__':
                         help='number of classes')
     parser.add_argument('--batch_size', default=32, type=int,
                         help='Batch size')
+    parser.add_argument('--labeled_tgt_batch_size', default=8, type=int,
+                        help='Batch size of labeled target data in a minibatch')
     parser.add_argument('--lambda_', default=5e-2, type=float,
                         help='coefficient of gradient passed by GradientReversal')
     parser.add_argument('--srcweight', default=None, type=int,
@@ -165,10 +188,15 @@ if __name__ == '__main__':
 
     if not osp.exists(args.save):
         os.system('mkdir -p '+args.save)
+    
+    use_ssda = not (args.labeled_tgt_address is None)
+    print("Use_SSDA = ", use_ssda)
 
     cfg = Config(args.config)
     source_file = osp.join(args.root_folder, args.src_address)
     target_file = osp.join(args.root_folder, args.tgt_address)
+    if use_ssda:
+        labeled_target_file = osp.join(args.root_folder, args.labeled_tgt_address)
     source_test_file = osp.join(args.root_folder, args.src_test_address)
     target_test_file = osp.join(args.root_folder, args.tgt_test_address)
 
@@ -218,7 +246,14 @@ if __name__ == '__main__':
         model_instance.load_state_dict(state_dict)
 
     train_source_loader = load_images(source_file, batch_size=args.batch_size, resize_size=resize_size, crop_size=crop_size, is_cen=is_cen, root_folder=args.root_folder)
-    train_target_loader = load_images(target_file, batch_size=args.batch_size, resize_size=resize_size, crop_size=crop_size, is_cen=is_cen, root_folder=args.root_folder)
+
+    if use_ssda:
+        train_target_loader = load_images(target_file, batch_size=args.batch_size-args.labeled_tgt_batch_size, resize_size=resize_size, crop_size=crop_size, is_cen=is_cen, root_folder=args.root_folder)
+        train_labeled_target_loader = load_images(labeled_target_file, batch_size=args.labeled_tgt_batch_size, resize_size=resize_size, crop_size=crop_size, is_cen=is_cen, root_folder=args.root_folder)
+    else:
+        train_target_loader = load_images(target_file, batch_size=args.batch_size, resize_size=resize_size, crop_size=crop_size, is_cen=is_cen, root_folder=args.root_folder)
+        train_labeled_target_loader = None
+
     test_source_loader = load_images(source_test_file, batch_size=16,  resize_size=resize_size, crop_size=crop_size, is_train=False, is_cen=is_cen, root_folder=args.root_folder)
     test_target_loader = load_images(target_test_file, batch_size=16,  resize_size=resize_size, crop_size=crop_size, is_train=False, is_cen=is_cen, root_folder=args.root_folder)
 
@@ -238,5 +273,5 @@ if __name__ == '__main__':
     #train(model_instance, train_source_loader, train_target_loader, test_source_loader, test_target_loader, group_ratios,
     #      max_iter=300000, optimizer=optimizer, lr_scheduler=lr_scheduler, eval_interval=500, num_classes=class_num)
     train(model_instance, train_source_loader, train_target_loader, test_source_loader, test_target_loader,
-          max_iter=300000, eval_interval=500, num_classes=class_num)
+          max_iter=300000, eval_interval=500, num_classes=class_num, use_ssda=use_ssda, train_labeled_target_loader=train_labeled_target_loader)
 
