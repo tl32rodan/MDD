@@ -65,14 +65,25 @@ def evaluate(model_instance, input_loader, num_classes=12, max_iter=None):
     model_instance.set_train(ori_train_state)
     return {'accuracy':accuracy}
 
-def train(model_instance, train_source_loader, train_target_loader, test_source_loader, test_target_loader,
+def train(args, model_instance, train_source_loader, train_target_loader, test_source_loader, test_target_loader,
           #group_ratios, max_iter, optimizer, lr_scheduler, eval_interval, num_classes=12):
           max_iter, eval_interval, num_classes=12, use_ssda=False, train_labeled_target_loader=None):
+    param_dict = model_instance.get_parameter_dict()
     model_instance.set_train(True)
+
+    optim_G = torch.optim.SGD([{"params": param_dict["G"], "lr": args.lr*0.1}, \
+                               {"params": param_dict["Bottle"]}], \
+                               lr=args.lr, momentum=0.9 ,weight_decay=0.0005, nesterov=True)
+    optim_F = torch.optim.SGD(param_dict["F"], lr=args.lr, momentum=0.9 ,weight_decay=0.0005, nesterov=True)
+    optim_F_Prime = torch.optim.SGD(param_dict["F_Prime"], lr=args.lr, momentum=0.9 ,weight_decay=0.0005, nesterov=True)
+
+    lr_sch_G = torch.optim.lr_scheduler.StepLR(optim_G, 10, 0.8)
+    lr_sch_F = torch.optim.lr_scheduler.StepLR(optim_F, 10, 0.8)
+    lr_sch_F_Prime = torch.optim.lr_scheduler.StepLR(optim_F_Prime, 10, 0.8)
+    
     print("start train...")
 
-    optimizer = torch.optim.SGD(list(model_instance.c_net.parameters()), lr=0.001, momentum=0.9 ,weight_decay=0.0005, nesterov=True)
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 10, 0.8)
+
     iter_num = 0
     epoch = 0
     total_progress_bar = tqdm.tqdm(desc='Train iter', total=max_iter)
@@ -90,7 +101,7 @@ def train(model_instance, train_source_loader, train_target_loader, test_source_
                 total=total_len,
                 desc='Train epoch = {}'.format(epoch), ncols=80, leave=False):
             model_instance.set_train(True)
-            
+            # Preparing data
             if use_ssda:
                 datas, datat_l, datat = data_tuple
                 inputs_target_l, labels_target_l = datat_l
@@ -100,9 +111,6 @@ def train(model_instance, train_source_loader, train_target_loader, test_source_
             inputs_source, labels_source = datas
             inputs_target, _ = datat
 
-            #optimizer = lr_scheduler.next_optimizer(group_ratios, optimizer, iter_num/5)
-            optimizer.zero_grad()
-            
             if use_ssda:
                 inputs = torch.cat((inputs_source, inputs_target_l, inputs_target), dim=0)
                 cls_gt = torch.cat((labels_source, labels_target_l), dim=0)
@@ -113,15 +121,50 @@ def train(model_instance, train_source_loader, train_target_loader, test_source_
             if model_instance.use_gpu:
                 inputs, cls_gt = inputs.cuda(), cls_gt.cuda()
             
-            cls_loss, dis_loss = train_batch(model_instance, inputs, cls_gt, optimizer, len_source=len(inputs_source))
+            # Training 
+            if args.lower_bound:
+                ## Step 0: If training lower bound, we can update G & F together
+                cls_loss, dis_loss = model_instance.get_loss(inputs, cls_gt, len_source=len(inputs_source))
+
+                loss = cls_loss
+                optim_F.zero_grad()
+                optim_G.zero_grad()
+                loss.backward()
+                optim_F.step()
+                optim_G.step()
+            else:
+                ## Step 1: Update F by CE
+                cls_loss, dis_loss = model_instance.get_loss(inputs, cls_gt, len_source=len(inputs_source))
+                
+                loss = cls_loss
+                optim_F.zero_grad()
+                loss.backward()
+                optim_F.step()
+                ## Step 2: Update F_Prime by MDD
+                cls_loss, dis_loss = model_instance.get_loss(inputs, cls_gt, len_source=len(inputs_source))
+                
+                loss = args.eta_*dis_loss
+                optim_F_Prime.zero_grad()
+                loss.backward()
+                optim_F_Prime.step()
+                ## Step 3: Update G by CE & MDD
+                cls_loss, dis_loss = model_instance.get_loss(inputs, cls_gt, len_source=len(inputs_source))
+                
+                loss = cls_loss + args.eta_*dis_loss
+                optim_G.zero_grad()
+                loss.backward()
+                optim_G.step()
+
+            #cls_loss, dis_loss = train_batch(model_instance, inputs, cls_gt, optimizer, len_source=len(inputs_source), eta_=args.eta_)
             #if cls_loss > 10 or dis_loss > 10:
             #    print('Classifier loss = ', cls_loss, ' ; Discrepency loss = ', dis_loss)
             #print('Classifier loss = ', cls_loss, ' ; Discrepency loss = ', dis_loss)
             #print('lr = ', optimizer.param_groups[0]['lr'])
+
             # val
             if iter_num % eval_interval == 0 and iter_num != 0:
                 print("===================================")
-                print('lr = ', optimizer.param_groups[0]['lr'])
+                print('lr_G = ', optim_G.param_groups[0]['lr'])
                 print('Classifier loss = ', cls_loss, ' ; Discrepency loss = ', dis_loss)
                 print("Stest")
                 eval_result = evaluate(model_instance, test_source_loader, num_classes=num_classes)
@@ -130,7 +173,9 @@ def train(model_instance, train_source_loader, train_target_loader, test_source_
                 eval_result = evaluate(model_instance, test_target_loader, num_classes=num_classes)
                 torch.save(model_instance.c_net.state_dict(), osp.join(args.save, str(int(eval_result['accuracy'].item()*100))+'.pth'))
 
-                lr_scheduler.step()
+                lr_sch_G.step()
+                lr_sch_F.step()
+                lr_sch_F_Prime.step()
 
             iter_num += 1
             total_progress_bar.update(1)
@@ -139,9 +184,9 @@ def train(model_instance, train_source_loader, train_target_loader, test_source_
             break
     print('finish train')
 
-def train_batch(model_instance, inputs, cls_gt, optimizer, len_source=-1):
+def train_batch(model_instance, inputs, cls_gt, optimizer, len_source=-1, eta_=1):
     classifier_loss, discrepency_loss = model_instance.get_loss(inputs, cls_gt, len_source=len_source)
-    total_loss = classifier_loss + discrepency_loss
+    total_loss = classifier_loss + eta_*discrepency_loss
     total_loss.backward()
     optimizer.step()
 
@@ -178,19 +223,25 @@ if __name__ == '__main__':
                         help='Batch size of labeled target data in a minibatch')
     parser.add_argument('--lambda_', default=5e-2, type=float,
                         help='coefficient of gradient passed by GradientReversal')
+    parser.add_argument('--eta_', default=1, type=float,
+                        help='coefficient of discrepency loss (v.s. classification loss)')
+    parser.add_argument('--lr', default=1e-3, type=float,
+                        help='Learning rate')
     parser.add_argument('--srcweight', default=None, type=int,
                         help='source weight in MDD')
     parser.add_argument('--reuse_ckpt', default=False, type=bool,
                         help='To reuse checkpoint or not')
     parser.add_argument('--reuse_ckpt_weight', default=None, type=int,
                         help='The weight to use')
+    parser.add_argument('--lower_bound', default=False, action='store_true',
+                        help='To reuse checkpoint or not')
     args = parser.parse_args()
 
     if not osp.exists(args.save):
         os.system('mkdir -p '+args.save)
     
     use_ssda = not (args.labeled_tgt_address is None)
-    print("Use_SSDA = ", use_ssda)
+    print("Use_SSDA = ", use_ssda, "; Training lower bound = ", args.lower_bound)
 
     cfg = Config(args.config)
     source_file = osp.join(args.root_folder, args.src_address)
@@ -238,26 +289,31 @@ if __name__ == '__main__':
 
     if not (args.srcweight is None):
         srcweight = args.srcweight
-    #model_instance = MDD(base_net='ResNet50', width=width, use_gpu=True, class_num=class_num, srcweight=srcweight)
-    model_instance = MDD(base_net='ResNet101', width=width, use_gpu=True, class_num=class_num, srcweight=srcweight, lambda_=args.lambda_)
+    model_instance = MDD(base_net='ResNet101', width=width, use_gpu=True, class_num=class_num, \
+                         srcweight=srcweight, lambda_=args.lambda_)
    
     if args.reuse_ckpt:
         state_dict = torch.load(osp.join(args.save, args.reuse_ckpt_weight+'.pth'))
         model_instance.load_state_dict(state_dict)
 
-    train_source_loader = load_images(source_file, batch_size=args.batch_size, resize_size=resize_size, crop_size=crop_size, is_cen=is_cen, root_folder=args.root_folder)
+    train_source_loader = load_images(source_file, batch_size=args.batch_size, resize_size=resize_size, crop_size=crop_size, \
+                                      is_cen=is_cen, root_folder=args.root_folder)
 
     if use_ssda:
-        train_target_loader = load_images(target_file, batch_size=args.batch_size-args.labeled_tgt_batch_size, resize_size=resize_size, crop_size=crop_size, is_cen=is_cen, root_folder=args.root_folder)
-        train_labeled_target_loader = load_images(labeled_target_file, batch_size=args.labeled_tgt_batch_size, resize_size=resize_size, crop_size=crop_size, is_cen=is_cen, root_folder=args.root_folder)
+        train_target_loader = load_images(target_file, batch_size=args.batch_size-args.labeled_tgt_batch_size, resize_size=resize_size, \
+                                          crop_size=crop_size, is_cen=is_cen, root_folder=args.root_folder)
+        train_labeled_target_loader = load_images(labeled_target_file, batch_size=args.labeled_tgt_batch_size, resize_size=resize_size, \
+                                          crop_size=crop_size, is_cen=is_cen, root_folder=args.root_folder)
     else:
-        train_target_loader = load_images(target_file, batch_size=args.batch_size, resize_size=resize_size, crop_size=crop_size, is_cen=is_cen, root_folder=args.root_folder)
+        train_target_loader = load_images(target_file, batch_size=args.batch_size, resize_size=resize_size, \
+                                          crop_size=crop_size, is_cen=is_cen, root_folder=args.root_folder)
         train_labeled_target_loader = None
 
-    test_source_loader = load_images(source_test_file, batch_size=16,  resize_size=resize_size, crop_size=crop_size, is_train=False, is_cen=is_cen, root_folder=args.root_folder)
-    test_target_loader = load_images(target_test_file, batch_size=16,  resize_size=resize_size, crop_size=crop_size, is_train=False, is_cen=is_cen, root_folder=args.root_folder)
+    test_source_loader = load_images(source_test_file, batch_size=16,  resize_size=resize_size, crop_size=crop_size, is_train=False, \
+                            is_cen=is_cen, root_folder=args.root_folder)
+    test_target_loader = load_images(target_test_file, batch_size=16,  resize_size=resize_size, crop_size=crop_size, is_train=False, \
+                            is_cen=is_cen, root_folder=args.root_folder)
 
-    #param_groups = model_instance.get_parameter_list()
     #group_ratios = [group['lr'] for group in param_groups]
 
 
@@ -272,6 +328,9 @@ if __name__ == '__main__':
 
     #train(model_instance, train_source_loader, train_target_loader, test_source_loader, test_target_loader, group_ratios,
     #      max_iter=300000, optimizer=optimizer, lr_scheduler=lr_scheduler, eval_interval=500, num_classes=class_num)
-    train(model_instance, train_source_loader, train_target_loader, test_source_loader, test_target_loader,
-          max_iter=300000, eval_interval=500, num_classes=class_num, use_ssda=use_ssda, train_labeled_target_loader=train_labeled_target_loader)
+    
+
+    train(args, model_instance, train_source_loader, train_target_loader, test_source_loader, test_target_loader,
+          max_iter=300000,eval_interval=500, num_classes=class_num, 
+          use_ssda=use_ssda, train_labeled_target_loader=train_labeled_target_loader)
 
