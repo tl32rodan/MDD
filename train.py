@@ -132,7 +132,18 @@ def train(args, model_instance, train_source_loader, train_target_loader, test_s
                 loss.backward()
                 optim_F.step()
                 optim_G.step()
-            else:
+            elif args.training_step == '1-step':
+                cls_loss, dis_loss = model_instance.get_loss(inputs, cls_gt, len_source=len(inputs_source))
+
+                loss = cls_loss + args.eta_*dis_loss
+                optim_F.zero_grad()
+                optim_F_Prime.zero_grad()
+                optim_G.zero_grad()
+                loss.backward()
+                optim_F.step()
+                optim_F_Prime.step()
+                optim_G.step()
+            elif args.training_step == '3-step':
                 ## Step 1: Update F by CE
                 cls_loss, dis_loss = model_instance.get_loss(inputs, cls_gt, len_source=len(inputs_source))
                 
@@ -140,6 +151,7 @@ def train(args, model_instance, train_source_loader, train_target_loader, test_s
                 optim_F.zero_grad()
                 loss.backward()
                 optim_F.step()
+                
                 ## Step 2: Update F_Prime by MDD
                 cls_loss, dis_loss = model_instance.get_loss(inputs, cls_gt, len_source=len(inputs_source))
                 
@@ -147,14 +159,17 @@ def train(args, model_instance, train_source_loader, train_target_loader, test_s
                 optim_F_Prime.zero_grad()
                 loss.backward()
                 optim_F_Prime.step()
-                ## Step 3: Update G by CE & MDD
-                cls_loss, dis_loss = model_instance.get_loss(inputs, cls_gt, len_source=len(inputs_source))
                 
-                loss = cls_loss + args.eta_*dis_loss
-                optim_G.zero_grad()
-                loss.backward()
-                optim_G.step()
-
+                ## Step 3: Update G by CE & MDD
+                for k in range(args.num_k):
+                    cls_loss, dis_loss = model_instance.get_loss(inputs, cls_gt, len_source=len(inputs_source))
+                    
+                    loss = cls_loss + args.eta_*dis_loss
+                    optim_G.zero_grad()
+                    loss.backward()
+                    optim_G.step()
+            else:
+                raise ValueError
             #cls_loss, dis_loss = train_batch(model_instance, inputs, cls_gt, optimizer, len_source=len(inputs_source), eta_=args.eta_)
             #if cls_loss > 10 or dis_loss > 10:
             #    print('Classifier loss = ', cls_loss, ' ; Discrepency loss = ', dis_loss)
@@ -235,6 +250,10 @@ if __name__ == '__main__':
                         help='The weight to use')
     parser.add_argument('--lower_bound', default=False, action='store_true',
                         help='To reuse checkpoint or not')
+    parser.add_argument('--training_step', default='1-step', type=str, choices=['1-step', '3-step'],
+                        help='Adopt 1-step training or 3-step training')
+    parser.add_argument('--num_k', default=1, type=int,
+                        help='Number of updating G in 1 minibatch')
     args = parser.parse_args()
 
     if not osp.exists(args.save):
