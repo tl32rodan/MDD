@@ -269,6 +269,7 @@ if __name__ == '__main__':
         is_cen = False
         resize_size = 256
         crop_size = 224
+        eval_interval=3000
     elif args.dataset == 'Office-Home':
         class_num = 65
         width = 2048
@@ -287,6 +288,7 @@ if __name__ == '__main__':
         is_cen = True
         resize_size = 400
         crop_size = 400
+        eval_interval=500
     else:
         width = -1
 

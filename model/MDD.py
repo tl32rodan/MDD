@@ -133,29 +133,35 @@ class MDD(object):
         if len_source == -1:
             len_source = cls_gt.size(0)
         _, outputs, _, outputs_adv = self.c_net(inputs)
-        target_adv = outputs.max(1)[1]
-        target_adv_src = target_adv[:len_source]
-        target_adv_tgt = target_adv[len_source:]
-
-        classifier_loss_adv_src = class_criterion(outputs_adv[:len_source], target_adv_src)
-
-        # According to issue on github
-        logloss_tgt = torch.log(torch.clamp(1 - F.softmax(outputs_adv[len_source:], dim=1), min=1e-15))
-        classifier_loss_adv_tgt = F.nll_loss(logloss_tgt, target_adv_tgt)
-
+        
         if use_oracle_IW:
             reweighted_class_criterion = nn.CrossEntropyLoss(weight=torch.tensor(1.0 / source_weight, dtype=torch.float, requires_grad=False).cuda(), reduction='none')
             ys_onehot = torch.zeros(len_source, self.class_num).cuda()
             ys_onehot.scatter_(1, cls_gt[:len_source].view(-1, 1), 1)
             weights = torch.mm(ys_onehot, true_weights)
             if cls_gt.size(0) != len_source: # Detect Semi-DA setting
-                classifier_loss = torch.mean(reweighted_class_criterion(outputs[:len_source], cls_gt[:len_source]) * weights / self.class_num) + class_criterion(outputs[len_source:cls_gt.size(0)], cls_gt[len_source:]) # reweighted source + labeled target
+                classifier_loss = torch.mean(reweighted_class_criterion(outputs[:len_source], cls_gt[:len_source]) * weights / self.class_num) \
+                                + class_criterion(outputs[len_source:cls_gt.size(0)], cls_gt[len_source:]) # reweighted source + labeled target
             else: # UDA setting
                 classifier_loss = torch.mean(reweighted_class_criterion(outputs[:cls_gt.size(0)], cls_gt) * weights / self.class_num)
-            transfer_loss = self.srcweight * weights * classifier_loss_adv_src + classifier_loss_adv_tgt
         else:
             classifier_loss = class_criterion(outputs[:cls_gt.size(0)], cls_gt)
-            transfer_loss = self.srcweight*classifier_loss_adv_src + classifier_loss_adv_tgt
+         
+        target_adv = outputs.max(1)[1]
+        target_adv_src = target_adv[:len_source]
+        target_adv_tgt = target_adv[len_source:]
+
+        if use_oracle_IW:
+            classifier_loss_adv_src = torch.mean(weights*nn.CrossEntropyLoss(reduction='none')(outputs_adv[:len_source], target_adv_src))
+        else:
+            classifier_loss_adv_src = nn.CrossEntropyLoss()(outputs_adv[:len_source], target_adv_src)
+            
+
+        # According to issue on github
+        logloss_tgt = torch.log(torch.clamp(1 - F.softmax(outputs_adv[len_source:], dim=1), min=1e-15))
+        classifier_loss_adv_tgt = F.nll_loss(logloss_tgt, target_adv_tgt)
+            
+        transfer_loss = self.srcweight*classifier_loss_adv_src + classifier_loss_adv_tgt
 
         return classifier_loss, transfer_loss
             
