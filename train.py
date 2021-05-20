@@ -247,6 +247,10 @@ if __name__ == '__main__':
     target_file = osp.join(args.root_folder, args.tgt_address)
     if use_ssda:
         labeled_target_file = osp.join(args.root_folder, args.labeled_tgt_address)
+    if args.src_test_address is None:
+        args.src_test_address = args.src_address
+    if args.tgt_test_address is None:
+        args.tgt_test_address = args.tgt_address
     source_test_file = osp.join(args.root_folder, args.src_test_address)
     target_test_file = osp.join(args.root_folder, args.tgt_test_address)
 
