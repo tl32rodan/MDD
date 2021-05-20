@@ -126,41 +126,43 @@ class MDD(object):
             self.c_net = self.c_net.cuda()
         self.srcweight = srcweight
 
-    def get_loss(self, inputs, cls_gt, len_source=-1):
+    def get_loss(self, inputs, cls_gt, len_source=-1, use_oracle_IW=False, true_weights=None, source_weight=None):
         self.iter_num += 1
         class_criterion = nn.CrossEntropyLoss()
 
         if len_source == -1:
             len_source = cls_gt.size(0)
         _, outputs, _, outputs_adv = self.c_net(inputs)
-
-        classifier_loss = class_criterion(outputs[:cls_gt.size(0)], cls_gt)
-
         target_adv = outputs.max(1)[1]
-        #print(target_adv)
         target_adv_src = target_adv[:len_source]
         target_adv_tgt = target_adv[len_source:]
 
         classifier_loss_adv_src = class_criterion(outputs_adv[:len_source], target_adv_src)
 
-        #logloss_tgt = torch.log(1 - F.softmax(outputs_adv[cls_gt.size(0):], dim=1))
         # According to issue on github
         logloss_tgt = torch.log(torch.clamp(1 - F.softmax(outputs_adv[len_source:], dim=1), min=1e-15))
         classifier_loss_adv_tgt = F.nll_loss(logloss_tgt, target_adv_tgt)
-        #loss_tgt = 1 - F.softmax(outputs_adv[cls_gt.size(0):], dim=1)
-        #classifier_loss_adv_tgt = F.nll_loss(loss_tgt, target_adv_tgt)
 
-        #transfer_loss = self.srcweight*classifier_loss_adv_src + classifier_loss_adv_tgt
-        transfer_loss = self.srcweight*classifier_loss_adv_src + classifier_loss_adv_tgt
-        #print('\t classifier_loss_adv_src = ',classifier_loss_adv_src.cpu().item(), ' ; classifier_loss_adv_tgt = ', classifier_loss_adv_tgt.cpu().item())
+        if use_oracle_IW:
+            reweighted_class_criterion = nn.CrossEntropyLoss(weight=torch.tensor(1.0 / source_weight, dtype=torch.float, requires_grad=False).cuda(), reduction='none')
+            ys_onehot = torch.zeros(len_source, self.class_num).cuda()
+            ys_onehot.scatter_(1, cls_gt[:len_source].view(-1, 1), 1)
+            weights = torch.mm(ys_onehot, true_weights)
+            if cls_gt.size(0) != len_source: # Detect Semi-DA setting
+                classifier_loss = torch.mean(reweighted_class_criterion(outputs[:len_source], cls_gt[:len_source]) * weights / self.class_num) + class_criterion(outputs[len_source:cls_gt.size(0)], cls_gt[len_source:]) # reweighted source + labeled target
+            else: # UDA setting
+                classifier_loss = torch.mean(reweighted_class_criterion(outputs[:cls_gt.size(0)], cls_gt) * weights / self.class_num)
+            transfer_loss = self.srcweight * weights * classifier_loss_adv_src + classifier_loss_adv_tgt
+        else:
+            classifier_loss = class_criterion(outputs[:cls_gt.size(0)], cls_gt)
+            transfer_loss = self.srcweight*classifier_loss_adv_src + classifier_loss_adv_tgt
+
         return classifier_loss, transfer_loss
             
 
     def predict(self, inputs):
         _, _, softmax_outputs,_= self.c_net(inputs)
         return softmax_outputs
-        #_, _, _ , outputs_adv= self.c_net(inputs)
-        #return F.softmax(outputs_adv, dim=1)
 
     def get_parameter_dict(self):
         if self.use_gpu:

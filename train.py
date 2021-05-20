@@ -7,21 +7,7 @@ from torch.autograd import Variable
 import torch
 from sklearn.metrics import confusion_matrix
 import numpy as np
-
-
-class INVScheduler(object):
-    def __init__(self, gamma, decay_rate, init_lr=0.001):
-        self.gamma = gamma
-        self.decay_rate = decay_rate
-        self.init_lr = init_lr
-
-    def next_optimizer(self, group_ratios, optimizer, num_iter):
-        lr = self.init_lr * (1 + self.gamma * num_iter) ** (-self.decay_rate)
-        i=0
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = lr * group_ratios[i]
-            i+=1
-        return optimizer
+from preprocess.data_list import ImageList
 
 
 #==============eval
@@ -65,9 +51,9 @@ def evaluate(model_instance, input_loader, num_classes=12, max_iter=None):
     model_instance.set_train(ori_train_state)
     return {'accuracy':accuracy}
 
-def train(args, model_instance, train_source_loader, train_target_loader, test_source_loader, test_target_loader,
-          #group_ratios, max_iter, optimizer, lr_scheduler, eval_interval, num_classes=12):
-          max_iter, eval_interval, num_classes=12, use_ssda=False, train_labeled_target_loader=None):
+def train(args, model_instance, train_source_loader, train_target_loader, test_source_loader, test_target_loader,\
+          max_iter, eval_interval, num_classes=12, use_ssda=False, train_labeled_target_loader=None,\
+          true_weights=None, source_weight=None):
     param_dict = model_instance.get_parameter_dict()
     model_instance.set_train(True)
 
@@ -124,7 +110,8 @@ def train(args, model_instance, train_source_loader, train_target_loader, test_s
             # Training 
             if args.lower_bound:
                 ## Step 0: If training lower bound, we can update G & F together
-                cls_loss, dis_loss = model_instance.get_loss(inputs, cls_gt, len_source=len(inputs_source))
+                cls_loss, dis_loss = model_instance.get_loss(inputs, cls_gt, len(inputs_source), \
+                                                             args.use_oracle_IW, true_weights, source_weight)
 
                 loss = cls_loss
                 optim_F.zero_grad()
@@ -133,7 +120,8 @@ def train(args, model_instance, train_source_loader, train_target_loader, test_s
                 optim_F.step()
                 optim_G.step()
             elif args.training_step == '1-step':
-                cls_loss, dis_loss = model_instance.get_loss(inputs, cls_gt, len_source=len(inputs_source))
+                cls_loss, dis_loss = model_instance.get_loss(inputs, cls_gt, len(inputs_source), \
+                                                             args.use_oracle_IW, true_weights, source_weight)
 
                 loss = cls_loss + args.eta_*dis_loss
                 optim_F.zero_grad()
@@ -145,7 +133,8 @@ def train(args, model_instance, train_source_loader, train_target_loader, test_s
                 optim_G.step()
             elif args.training_step == '3-step':
                 ## Step 1: Update F by CE
-                cls_loss, dis_loss = model_instance.get_loss(inputs, cls_gt, len_source=len(inputs_source))
+                cls_loss, dis_loss = model_instance.get_loss(inputs, cls_gt, len(inputs_source), \
+                                                             args.use_oracle_IW, true_weights, source_weight)
                 
                 loss = cls_loss
                 optim_F.zero_grad()
@@ -153,7 +142,8 @@ def train(args, model_instance, train_source_loader, train_target_loader, test_s
                 optim_F.step()
                 
                 ## Step 2: Update F_Prime by MDD
-                cls_loss, dis_loss = model_instance.get_loss(inputs, cls_gt, len_source=len(inputs_source))
+                cls_loss, dis_loss = model_instance.get_loss(inputs, cls_gt, len(inputs_source), \
+                                                             args.use_oracle_IW, true_weights, source_weight)
                 
                 loss = args.eta_*dis_loss
                 optim_F_Prime.zero_grad()
@@ -162,7 +152,8 @@ def train(args, model_instance, train_source_loader, train_target_loader, test_s
                 
                 ## Step 3: Update G by CE & MDD
                 for k in range(args.num_k):
-                    cls_loss, dis_loss = model_instance.get_loss(inputs, cls_gt, len_source=len(inputs_source))
+                    cls_loss, dis_loss = model_instance.get_loss(inputs, cls_gt, len(inputs_source), \
+                                                             args.use_oracle_IW, true_weights, source_weight)
                     
                     loss = cls_loss + args.eta_*dis_loss
                     optim_G.zero_grad()
@@ -170,11 +161,6 @@ def train(args, model_instance, train_source_loader, train_target_loader, test_s
                     optim_G.step()
             else:
                 raise ValueError
-            #cls_loss, dis_loss = train_batch(model_instance, inputs, cls_gt, optimizer, len_source=len(inputs_source), eta_=args.eta_)
-            #if cls_loss > 10 or dis_loss > 10:
-            #    print('Classifier loss = ', cls_loss, ' ; Discrepency loss = ', dis_loss)
-            #print('Classifier loss = ', cls_loss, ' ; Discrepency loss = ', dis_loss)
-            #print('lr = ', optimizer.param_groups[0]['lr'])
 
             # val
             if iter_num % eval_interval == 0 and iter_num != 0:
@@ -198,14 +184,6 @@ def train(args, model_instance, train_source_loader, train_target_loader, test_s
         if iter_num >= max_iter:
             break
     print('finish train')
-
-def train_batch(model_instance, inputs, cls_gt, optimizer, len_source=-1, eta_=1):
-    classifier_loss, discrepency_loss = model_instance.get_loss(inputs, cls_gt, len_source=len_source)
-    total_loss = classifier_loss + eta_*discrepency_loss
-    total_loss.backward()
-    optimizer.step()
-
-    return classifier_loss.cpu().item(), discrepency_loss.cpu().item()
 
 if __name__ == '__main__':
     from model.MDD import MDD
@@ -254,6 +232,8 @@ if __name__ == '__main__':
                         help='Adopt 1-step training or 3-step training')
     parser.add_argument('--num_k', default=1, type=int,
                         help='Number of updating G in 1 minibatch')
+    parser.add_argument('--use_oracle_IW', default=False, action='store_true',
+                        help='Adopt oracle importance weight or not')
     args = parser.parse_args()
 
     if not osp.exists(args.save):
@@ -315,41 +295,53 @@ if __name__ == '__main__':
         state_dict = torch.load(osp.join(args.save, args.reuse_ckpt_weight+'.pth'))
         model_instance.load_state_dict(state_dict)
 
+    # Calculate source distribution & target distribution
+    if args.use_oracle_IW:
+        dset_s = ImageList(open(source_file).readlines(), root_folder=args.root_folder)
+        dset_t = ImageList(open(target_file).readlines(), root_folder=args.root_folder)
+        source_label_distribution = np.zeros((class_num))
+        target_label_distribution = np.zeros((class_num))
+        for img in dset_s.imgs:
+            source_label_distribution[img[1]] += 1
+        for img in dset_t.imgs:
+            target_label_distribution[img[1]] += 1
+        source_label_distribution /= np.sum(source_label_distribution)
+        target_label_distribution /= np.sum(target_label_distribution)
+        print("Source label distribution: {}".format(source_label_distribution))
+        print("Target label distribution: {}".format(target_label_distribution))
+        # True importance weight   
+        true_weights = torch.tensor(target_label_distribution / source_label_distribution, \
+                                    dtype=torch.float, requires_grad=False)[:, None].cuda()
+        print("True weights : {}".format(true_weights[:, 0].cpu().numpy()))
+    else:
+        true_weights = None
+        source_label_distribution = None
+
+
     train_source_loader = load_images(source_file, batch_size=args.batch_size, resize_size=resize_size, crop_size=crop_size, \
                                       is_cen=is_cen, root_folder=args.root_folder)
 
     if use_ssda:
-        train_target_loader = load_images(target_file, batch_size=args.batch_size-args.labeled_tgt_batch_size, resize_size=resize_size, \
-                                          crop_size=crop_size, is_cen=is_cen, root_folder=args.root_folder)
-        train_labeled_target_loader = load_images(labeled_target_file, batch_size=args.labeled_tgt_batch_size, resize_size=resize_size, \
-                                          crop_size=crop_size, is_cen=is_cen, root_folder=args.root_folder)
+        train_target_loader = load_images(target_file, batch_size=args.batch_size-args.labeled_tgt_batch_size, \
+                                                resize_size=resize_size, crop_size=crop_size, is_cen=is_cen, \
+                                                root_folder=args.root_folder)
+        train_labeled_target_loader = load_images(labeled_target_file, batch_size=args.labeled_tgt_batch_size, \
+                                                resize_size=resize_size, crop_size=crop_size, is_cen=is_cen, \
+                                                root_folder=args.root_folder)
     else:
         train_target_loader = load_images(target_file, batch_size=args.batch_size, resize_size=resize_size, \
                                           crop_size=crop_size, is_cen=is_cen, root_folder=args.root_folder)
         train_labeled_target_loader = None
 
-    test_source_loader = load_images(source_test_file, batch_size=16,  resize_size=resize_size, crop_size=crop_size, is_train=False, \
-                            is_cen=is_cen, root_folder=args.root_folder)
-    test_target_loader = load_images(target_test_file, batch_size=16,  resize_size=resize_size, crop_size=crop_size, is_train=False, \
-                            is_cen=is_cen, root_folder=args.root_folder)
+    test_source_loader = load_images(source_test_file, batch_size=16,  resize_size=resize_size, crop_size=crop_size, \
+                                    is_train=False, is_cen=is_cen, root_folder=args.root_folder)
+    test_target_loader = load_images(target_test_file, batch_size=16,  resize_size=resize_size, crop_size=crop_size, \
+                                    is_train=False, is_cen=is_cen, root_folder=args.root_folder)
 
-    #group_ratios = [group['lr'] for group in param_groups]
-
-
-    #assert cfg.optim.type == 'sgd', 'Optimizer type not supported!'
-
-    #optimizer = torch.optim.SGD(param_groups, **cfg.optim.params)
-
-    #assert cfg.lr_scheduler.type == 'inv', 'Scheduler type not supported!'
-    #lr_scheduler = INVScheduler(gamma=cfg.lr_scheduler.gamma,
-    #                            decay_rate=cfg.lr_scheduler.decay_rate,
-    #                            init_lr=cfg.init_lr)
-
-    #train(model_instance, train_source_loader, train_target_loader, test_source_loader, test_target_loader, group_ratios,
-    #      max_iter=300000, optimizer=optimizer, lr_scheduler=lr_scheduler, eval_interval=500, num_classes=class_num)
-    
+        
 
     train(args, model_instance, train_source_loader, train_target_loader, test_source_loader, test_target_loader,
           max_iter=300000,eval_interval=500, num_classes=class_num, 
-          use_ssda=use_ssda, train_labeled_target_loader=train_labeled_target_loader)
+          use_ssda=use_ssda, train_labeled_target_loader=train_labeled_target_loader, \
+          true_weights=true_weights, source_weight=source_label_distribution)
 
