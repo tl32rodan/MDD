@@ -347,7 +347,7 @@ if __name__ == '__main__':
         
 
     train(args, model_instance, train_source_loader, train_target_loader, test_source_loader, test_target_loader,
-          max_iter=300000,eval_interval=500, num_classes=class_num, 
+          max_iter=300000,eval_interval=eval_interval, num_classes=class_num, 
           use_ssda=use_ssda, train_labeled_target_loader=train_labeled_target_loader, \
           true_weights=true_weights, source_weight=source_label_distribution)
 
