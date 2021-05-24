@@ -63,6 +63,11 @@ def train(args, model_instance, train_source_loader, train_target_loader, test_s
     optim_F = torch.optim.SGD(param_dict["F"], lr=args.lr, momentum=0.9 ,weight_decay=0.0005, nesterov=True)
     optim_F_prime = torch.optim.SGD(param_dict["F_prime"], lr=args.lr, momentum=0.9 ,weight_decay=0.0005, nesterov=True)
 
+    # ---------------- For reproducing results ------------------- #
+    optimizer = torch.optim.SGD(list(model_instance.c_net.parameters()), lr=0.001, momentum=0.9 ,weight_decay=0.0005, nesterov=True)
+    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 10, 0.8)
+    # ------------------------------------------------------------ #
+
     print('================== Learning rate =====================')
     print('lr_G = ', optim_G.param_groups[0]['lr'])
     print('lr_F = ', optim_F.param_groups[0]['lr'], 'lr_F_prime = ', optim_F_prime.param_groups[0]['lr'])
@@ -101,6 +106,9 @@ def train(args, model_instance, train_source_loader, train_target_loader, test_s
             inputs_source, labels_source = datas
             inputs_target, _ = datat
 
+            # ---------------- For reproducing results ------------------- #
+            optimizer.zero_grad()
+
             if use_ssda:
                 inputs = torch.cat((inputs_source, inputs_target_l, inputs_target), dim=0)
                 cls_gt = torch.cat((labels_source, labels_target_l), dim=0)
@@ -128,13 +136,16 @@ def train(args, model_instance, train_source_loader, train_target_loader, test_s
                                                              args.use_oracle_IW, true_weights, source_weight)
 
                 loss = cls_loss + args.eta_*dis_loss
-                optim_F.zero_grad()
-                optim_F_prime.zero_grad()
-                optim_G.zero_grad()
+
                 loss.backward()
-                optim_F.step()
-                optim_F_prime.step()
-                optim_G.step()
+                optimizer.step()
+                #optim_F.zero_grad()
+                #optim_F_prime.zero_grad()
+                #optim_G.zero_grad()
+                #loss.backward()
+                #optim_F.step()
+                #optim_F_prime.step()
+                #optim_G.step()
             elif args.training_step == '3-step':
                 ## Step 1: Update F by CE
                 cls_loss, dis_loss = model_instance.get_loss(inputs, cls_gt, len(inputs_source), \
@@ -169,8 +180,11 @@ def train(args, model_instance, train_source_loader, train_target_loader, test_s
             # val
             if iter_num % eval_interval == 0 and iter_num != 0:
                 print("===================================")
-                print('lr_G = ', optim_G.param_groups[0]['lr'])
-                print('lr_F = ', optim_F.param_groups[0]['lr'], optim_F_prime.param_groups[0]['lr'])
+                if args.training_step == '1-step':
+                    print('lr = ', optimizer.param_groups[0]['lr'])
+                else:   
+                    print('lr_G = ', optim_G.param_groups[0]['lr'])
+                    print('lr_F = ', optim_F.param_groups[0]['lr'], optim_F_prime.param_groups[0]['lr'])
                 print('Classifier loss = ', cls_loss.item(), ' ; Discrepency loss = ', dis_loss.item())
                 print("Stest")
                 eval_result = evaluate(model_instance, test_source_loader, num_classes=num_classes)
@@ -178,10 +192,11 @@ def train(args, model_instance, train_source_loader, train_target_loader, test_s
                 print("Ttest")
                 eval_result = evaluate(model_instance, test_target_loader, num_classes=num_classes)
                 torch.save(model_instance.c_net.state_dict(), osp.join(args.save, str(int(eval_result['accuracy'].item()*100))+'.pth'))
-
-                lr_sch_G.step()
-                lr_sch_F.step()
-                lr_sch_F_prime.step()
+                if args.training_step == '1-step':
+                else:
+                    lr_sch_G.step()
+                    lr_sch_F.step()
+                    lr_sch_F_prime.step()
 
             iter_num += 1
             total_progress_bar.update(1)
@@ -247,7 +262,7 @@ if __name__ == '__main__':
         os.system('mkdir -p '+args.save)
     
     use_ssda = not (args.labeled_tgt_address is None)
-    print("Use_SSDA = ", use_ssda, "; Training lower bound = ", args.lower_bound)
+    print("Use_SSDA = ", use_ssda, "; Training lower bound = ", args.lower_bound, "; use_oracle_IW = ", args.use_oracle_IW)
 
     cfg = Config(args.config)
     source_file = osp.join(args.root_folder, args.src_address)
@@ -366,7 +381,7 @@ if __name__ == '__main__':
         
 
     train(args, model_instance, train_source_loader, train_target_loader, test_source_loader, test_target_loader,
-          max_iter=300000,eval_interval=500, num_classes=class_num, 
+          max_iter=300000,eval_interval=eval_interval, num_classes=class_num, 
           use_ssda=use_ssda, train_labeled_target_loader=train_labeled_target_loader, \
           true_weights=true_weights, source_weight=source_label_distribution)
 
