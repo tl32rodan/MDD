@@ -57,15 +57,19 @@ def train(args, model_instance, train_source_loader, train_target_loader, test_s
     param_dict = model_instance.get_parameter_dict()
     model_instance.set_train(True)
 
-    optim_G = torch.optim.SGD([{"params": param_dict["G"], "lr": args.lr*0.1}, \
+    optim_G = torch.optim.SGD([{"params": param_dict["G"], "lr": args.lr*0.1 if not args.same_lr else args.lr}, \
                                {"params": param_dict["Bottle"]}], \
                                lr=args.lr, momentum=0.9 ,weight_decay=0.0005, nesterov=True)
     optim_F = torch.optim.SGD(param_dict["F"], lr=args.lr, momentum=0.9 ,weight_decay=0.0005, nesterov=True)
-    optim_F_Prime = torch.optim.SGD(param_dict["F_Prime"], lr=args.lr, momentum=0.9 ,weight_decay=0.0005, nesterov=True)
+    optim_F_prime = torch.optim.SGD(param_dict["F_prime"], lr=args.lr, momentum=0.9 ,weight_decay=0.0005, nesterov=True)
 
+    print('================== Learning rate =====================')
+    print('lr_G = ', optim_G.param_groups[0]['lr'])
+    print('lr_F = ', optim_F.param_groups[0]['lr'], 'lr_F_prime = ', optim_F_prime.param_groups[0]['lr'])
+    print('======================================================')
     lr_sch_G = torch.optim.lr_scheduler.StepLR(optim_G, 10, 0.8)
     lr_sch_F = torch.optim.lr_scheduler.StepLR(optim_F, 10, 0.8)
-    lr_sch_F_Prime = torch.optim.lr_scheduler.StepLR(optim_F_Prime, 10, 0.8)
+    lr_sch_F_prime = torch.optim.lr_scheduler.StepLR(optim_F_prime, 10, 0.8)
     
     print("start train...")
 
@@ -125,11 +129,11 @@ def train(args, model_instance, train_source_loader, train_target_loader, test_s
 
                 loss = cls_loss + args.eta_*dis_loss
                 optim_F.zero_grad()
-                optim_F_Prime.zero_grad()
+                optim_F_prime.zero_grad()
                 optim_G.zero_grad()
                 loss.backward()
                 optim_F.step()
-                optim_F_Prime.step()
+                optim_F_prime.step()
                 optim_G.step()
             elif args.training_step == '3-step':
                 ## Step 1: Update F by CE
@@ -141,14 +145,14 @@ def train(args, model_instance, train_source_loader, train_target_loader, test_s
                 loss.backward()
                 optim_F.step()
                 
-                ## Step 2: Update F_Prime by MDD
+                ## Step 2: Update F_prime by MDD
                 cls_loss, dis_loss = model_instance.get_loss(inputs, cls_gt, len(inputs_source), \
                                                              args.use_oracle_IW, true_weights, source_weight)
                 
                 loss = args.eta_*dis_loss
-                optim_F_Prime.zero_grad()
+                optim_F_prime.zero_grad()
                 loss.backward()
-                optim_F_Prime.step()
+                optim_F_prime.step()
                 
                 ## Step 3: Update G by CE & MDD
                 for k in range(args.num_k):
@@ -166,7 +170,8 @@ def train(args, model_instance, train_source_loader, train_target_loader, test_s
             if iter_num % eval_interval == 0 and iter_num != 0:
                 print("===================================")
                 print('lr_G = ', optim_G.param_groups[0]['lr'])
-                print('Classifier loss = ', cls_loss, ' ; Discrepency loss = ', dis_loss)
+                print('lr_F = ', optim_F.param_groups[0]['lr'], optim_F_prime.param_groups[0]['lr'])
+                print('Classifier loss = ', cls_loss.item(), ' ; Discrepency loss = ', dis_loss.item())
                 print("Stest")
                 eval_result = evaluate(model_instance, test_source_loader, num_classes=num_classes)
                 print("-----------------------------------")
@@ -176,7 +181,7 @@ def train(args, model_instance, train_source_loader, train_target_loader, test_s
 
                 lr_sch_G.step()
                 lr_sch_F.step()
-                lr_sch_F_Prime.step()
+                lr_sch_F_prime.step()
 
             iter_num += 1
             total_progress_bar.update(1)
@@ -234,6 +239,8 @@ if __name__ == '__main__':
                         help='Number of updating G in 1 minibatch')
     parser.add_argument('--use_oracle_IW', default=False, action='store_true',
                         help='Adopt oracle importance weight or not')
+    parser.add_argument('--same_lr', default=False, action='store_true',
+                        help='Make feature extractor(G) and F & F_prime as same learning rate ; default: False')
     args = parser.parse_args()
 
     if not osp.exists(args.save):
@@ -311,8 +318,20 @@ if __name__ == '__main__':
             source_label_distribution[img[1]] += 1
         for img in dset_t.imgs:
             target_label_distribution[img[1]] += 1
+        
+        # Set the classess with too little amount to 1%
+        max_num_images_source = np.max(source_label_distribution)
+        for i, num_images in enumerate(source_label_distribution):
+            if num_images <= 0.01*max_num_images_source:
+                source_label_distribution[i] = 0.01*max_num_images_source
+        max_num_images_target = np.max(target_label_distribution)
+        for i, num_images in enumerate(target_label_distribution):
+            if num_images <= 0.01*max_num_images_target:
+                target_label_distribution[i] = 0.01*max_num_images_target
+
         source_label_distribution /= np.sum(source_label_distribution)
         target_label_distribution /= np.sum(target_label_distribution)
+
         print("Source label distribution: {}".format(source_label_distribution))
         print("Target label distribution: {}".format(target_label_distribution))
         # True importance weight   
