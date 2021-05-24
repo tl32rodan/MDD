@@ -97,7 +97,7 @@ class MDDNet(nn.Module):
         self.parameter_dict = {"G": self.base_network.parameters(),
                                "Bottle": self.bottleneck_layer.parameters(),
                                "F": self.classifier_layer.parameters(),
-                               "F_Prime": self.classifier_layer_2.parameters()}
+                               "F_prime": self.classifier_layer_2.parameters()}
     def forward(self, inputs):
         features = self.base_network(inputs)
         if self.use_bottleneck:
