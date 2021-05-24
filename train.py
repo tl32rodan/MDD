@@ -193,6 +193,7 @@ def train(args, model_instance, train_source_loader, train_target_loader, test_s
                 eval_result = evaluate(model_instance, test_target_loader, num_classes=num_classes)
                 torch.save(model_instance.c_net.state_dict(), osp.join(args.save, str(int(eval_result['accuracy'].item()*100))+'.pth'))
                 if args.training_step == '1-step':
+                    lr_scheduler.step()
                 else:
                     lr_sch_G.step()
                     lr_sch_F.step()
