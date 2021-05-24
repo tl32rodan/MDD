@@ -69,8 +69,11 @@ def train(args, model_instance, train_source_loader, train_target_loader, test_s
     # ------------------------------------------------------------ #
 
     print('================== Learning rate =====================')
-    print('lr_G = ', optim_G.param_groups[0]['lr'])
-    print('lr_F = ', optim_F.param_groups[0]['lr'], 'lr_F_prime = ', optim_F_prime.param_groups[0]['lr'])
+    if args.training_step == '1-step':
+        print('lr = ', optimizer.param_groups[0]['lr'])
+    else:   
+        print('lr_G = ', optim_G.param_groups[0]['lr'])
+        print('lr_F = ', optim_F.param_groups[0]['lr'], optim_F_prime.param_groups[0]['lr'])
     print('======================================================')
     lr_sch_G = torch.optim.lr_scheduler.StepLR(optim_G, 10, 0.8)
     lr_sch_F = torch.optim.lr_scheduler.StepLR(optim_F, 10, 0.8)
