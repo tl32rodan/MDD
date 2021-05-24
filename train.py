@@ -137,7 +137,7 @@ def train(args, model_instance, train_source_loader, train_target_loader, test_s
             elif args.training_step == '1-step':
                 cls_loss, dis_loss = model_instance.get_loss(inputs, cls_gt, len(inputs_source), \
                                                              args.use_oracle_IW, true_weights, source_weight)
-
+                #print(cls_loss.item(), dis_loss.item())
                 loss = cls_loss + args.eta_*dis_loss
 
                 loss.backward()
@@ -317,9 +317,11 @@ if __name__ == '__main__':
         eval_interval=500
     else:
         width = -1
-
+    # Custom srcweight
     if not (args.srcweight is None):
         srcweight = args.srcweight
+
+    # Create model
     model_instance = MDD(base_net='ResNet101', width=width, use_gpu=True, class_num=class_num, \
                          srcweight=srcweight, lambda_=args.lambda_)
    
@@ -351,15 +353,19 @@ if __name__ == '__main__':
         source_label_distribution /= np.sum(source_label_distribution)
         target_label_distribution /= np.sum(target_label_distribution)
 
-        print("Source label distribution: {}".format(source_label_distribution))
-        print("Target label distribution: {}".format(target_label_distribution))
         # True importance weight   
         true_weights = torch.tensor(target_label_distribution / source_label_distribution, \
                                     dtype=torch.float, requires_grad=False)[:, None].cuda()
+        print("Source label distribution: {}".format(source_label_distribution))
+        print("Target label distribution: {}".format(target_label_distribution))
         print("True weights : {}".format(true_weights[:, 0].cpu().numpy()))
     else:
         true_weights = None
         source_label_distribution = None
+        target_label_distribution = None
+        print("Source label distribution: {}".format(source_label_distribution))
+        print("Target label distribution: {}".format(target_label_distribution))
+        print("True weights : {}".format(true_weights))
 
 
     train_source_loader = load_images(source_file, batch_size=args.batch_size, resize_size=resize_size, crop_size=crop_size, \

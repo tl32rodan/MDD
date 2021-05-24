@@ -140,8 +140,8 @@ class MDD(object):
             ys_onehot.scatter_(1, cls_gt[:len_source].view(-1, 1), 1)
             weights = torch.mm(ys_onehot, true_weights)
             if cls_gt.size(0) != len_source: # Detect Semi-DA setting
-                classifier_loss = torch.mean(reweighted_class_criterion(outputs[:len_source], cls_gt[:len_source]) * weights / self.class_num) \
-                                + class_criterion(outputs[len_source:cls_gt.size(0)], cls_gt[len_source:]) # reweighted source + labeled target
+                classifier_loss = torch.mean(reweighted_class_criterion(outputs[:len_source], cls_gt[:len_source]) * weights / self.class_num) 
+                classifier_loss += class_criterion(outputs[len_source:cls_gt.size(0)], cls_gt[len_source:]) # reweighted source + labeled target
             else: # UDA setting
                 classifier_loss = torch.mean(reweighted_class_criterion(outputs[:cls_gt.size(0)], cls_gt) * weights / self.class_num)
         else:
