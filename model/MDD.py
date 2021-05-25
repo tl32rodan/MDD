@@ -32,47 +32,9 @@ class GradientReversal(torch.nn.Module):
         return GradientReversalFunction.apply(x, self.lambda_)
         #return GradientReverseLayer()(x)
 
-def weights_init(m):
-    classname = m.__class__.__name__
-    if classname.find('Conv') != -1:
-        m.weight.data.normal_(0.0, 0.01)
-        m.bias.data.normal_(0.0, 0.01)
-    elif classname.find('BatchNorm') != -1:
-        m.weight.data.normal_(1.0, 0.01)
-        m.bias.data.fill_(0)
-    elif classname.find('Linear') != -1:
-        m.weight.data.normal_(0.0, 0.01)
-        m.bias.data.normal_(0.0, 0.01)
-
-
-class ResClassifier(nn.Module):
-    def __init__(self, num_classes=12,num_layer = 2,num_unit=2048,prob=0.5,middle=1000):
-        super(ResClassifier, self).__init__()
-        layers = []
-        # currently 10000 units
-        layers.append(nn.Dropout(p=prob))
-        layers.append(nn.Linear(num_unit,middle))
-        layers.append(nn.BatchNorm1d(middle,affine=True))
-        layers.append(nn.ReLU(inplace=True))
-
-        for i in range(num_layer-1):
-            layers.append(nn.Dropout(p=prob))
-            layers.append(nn.Linear(middle,middle))
-            layers.append(nn.BatchNorm1d(middle,affine=True))
-            layers.append(nn.ReLU(inplace=True))
-        layers.append(nn.Linear(middle,num_classes))
-        self.classifier = nn.Sequential(*layers)
-
-    def set_lambda(self, lambd):
-        self.lambd = lambd
-    def forward(self, x):
-        x = self.classifier(x)
-        return x
-
 
 class MDDNet(nn.Module):
-    def __init__(self, base_net='ResNet50', use_bottleneck=True, bottleneck_dim=1024, width=1024, class_num=31, \
-                lambda_=5e-2):
+    def __init__(self, base_net='ResNet50', use_bottleneck=True, bottleneck_dim=1024, width=1024, class_num=31, lambda_=5e-2):
         super(MDDNet, self).__init__()
         ## set base network
         self.base_network = backbone.network_dict[base_net]()
@@ -83,15 +45,23 @@ class MDDNet(nn.Module):
         self.bottleneck_layer_list = [nn.Linear(self.base_network.output_num(), bottleneck_dim), nn.BatchNorm1d(bottleneck_dim), nn.ReLU(), nn.Dropout(0.5)]
         self.bottleneck_layer = nn.Sequential(*self.bottleneck_layer_list)
         
-        self.classifier_layer = ResClassifier(num_classes=class_num, num_unit=bottleneck_dim)
-        self.classifier_layer_2 = ResClassifier(num_classes=class_num, num_unit=bottleneck_dim)
+        self.classifier_layer_list = [nn.Linear(bottleneck_dim, width), nn.BatchNorm1d(width), nn.ReLU(), nn.Linear(width, class_num)]
+        self.classifier_layer = nn.Sequential(*self.classifier_layer_list)
+        
+        self.classifier_layer_2_list = [nn.Linear(bottleneck_dim, width), nn.BatchNorm1d(width), nn.ReLU(), nn.Linear(width, class_num)]
+        self.classifier_layer_2 = nn.Sequential(*self.classifier_layer_2_list)
         
         self.softmax = nn.Softmax(dim=1)
 
         ## initialization
-        self.bottleneck_layer.apply(weights_init)
-        self.classifier_layer.apply(weights_init)
-        self.classifier_layer_2.apply(weights_init)
+        self.bottleneck_layer[0].weight.data.normal_(0, 0.005)
+        self.bottleneck_layer[0].bias.data.fill_(0.1)
+        for dep in range(2):
+            self.classifier_layer_2[dep * 3].weight.data.normal_(0, 0.01)
+            self.classifier_layer_2[dep * 3].bias.data.fill_(0.0)
+            self.classifier_layer[dep * 3].weight.data.normal_(0, 0.01)
+            self.classifier_layer[dep * 3].bias.data.fill_(0.0)
+
 
         ## collect parameters
         self.parameter_dict = {"G": self.base_network.parameters(),
@@ -112,13 +82,12 @@ class MDDNet(nn.Module):
         return features, outputs, softmax_outputs, outputs_adv
 
 class MDD(object):
-    def __init__(self, base_net='ResNet50', width=1024, class_num=31, use_bottleneck=True, use_gpu=True, \
-                 srcweight=3, lambda_=5e-2):
+    def __init__(self, base_net='ResNet50', width=1024, class_num=31, use_bottleneck=True, use_gpu=True, srcweight=3, lambda_=5e-2):
         self.c_net = MDDNet(base_net, use_bottleneck, width, width, class_num, lambda_=lambda_)
-        if use_gpu:
-            self.c_net = nn.DataParallel(self.c_net)
 
         self.use_gpu = use_gpu
+        if self.use_gpu:
+            self.c_net = nn.DataParallel(self.c_net)
         self.is_train = False
         self.iter_num = 0
         self.class_num = class_num
