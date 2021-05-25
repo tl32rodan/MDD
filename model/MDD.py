@@ -105,22 +105,17 @@ class MDD(object):
         classifier_loss = class_criterion(outputs[:cls_gt.size(0)], cls_gt)
 
         target_adv = outputs.max(1)[1]
-        #print(target_adv)
         target_adv_src = target_adv[:len_source]
         target_adv_tgt = target_adv[len_source:]
 
         classifier_loss_adv_src = class_criterion(outputs_adv[:len_source], target_adv_src)
 
-        #logloss_tgt = torch.log(1 - F.softmax(outputs_adv[cls_gt.size(0):], dim=1))
         # According to issue on github
         logloss_tgt = torch.log(torch.clamp(1 - F.softmax(outputs_adv[len_source:], dim=1), min=1e-15))
         classifier_loss_adv_tgt = F.nll_loss(logloss_tgt, target_adv_tgt)
-        #loss_tgt = 1 - F.softmax(outputs_adv[cls_gt.size(0):], dim=1)
-        #classifier_loss_adv_tgt = F.nll_loss(loss_tgt, target_adv_tgt)
 
         #transfer_loss = self.srcweight*classifier_loss_adv_src + classifier_loss_adv_tgt
         transfer_loss = self.srcweight*classifier_loss_adv_src + classifier_loss_adv_tgt
-        #print('\t classifier_loss_adv_src = ',classifier_loss_adv_src.cpu().item(), ' ; classifier_loss_adv_tgt = ', classifier_loss_adv_tgt.cpu().item())
         self.iter_num += 1
 
         return classifier_loss, transfer_loss
