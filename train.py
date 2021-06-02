@@ -320,15 +320,16 @@ if __name__ == '__main__':
         for img in dset_t.imgs:
             target_label_distribution[img[1]] += 1
         
-        # Set the classess with too little amount to 1%
+        # Set the classess with too little amount to 5%
+        _min_ratio = 0.05 # Minimum ratio ; if 1 class's ratio will be set if it is lower than this
         max_num_images_source = np.max(source_label_distribution)
         for i, num_images in enumerate(source_label_distribution):
-            if num_images <= 0.01*max_num_images_source:
-                source_label_distribution[i] = 0.01*max_num_images_source
+            if num_images <= _min_ratio*max_num_images_source:
+                source_label_distribution[i] = _min_ratio*max_num_images_source
         max_num_images_target = np.max(target_label_distribution)
         for i, num_images in enumerate(target_label_distribution):
-            if num_images <= 0.01*max_num_images_target:
-                target_label_distribution[i] = 0.01*max_num_images_target
+            if num_images <= _min_ratio*max_num_images_target:
+                target_label_distribution[i] = _min_ratio*max_num_images_target
 
         source_label_distribution /= np.sum(source_label_distribution)
         target_label_distribution /= np.sum(target_label_distribution)
