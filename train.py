@@ -63,17 +63,9 @@ def train(args, model_instance, train_source_loader, train_target_loader, test_s
     optim_F = torch.optim.SGD(param_dict["F"], lr=args.lr, momentum=0.9 ,weight_decay=0.0005, nesterov=True)
     optim_F_prime = torch.optim.SGD(param_dict["F_prime"], lr=args.lr, momentum=0.9 ,weight_decay=0.0005, nesterov=True)
 
-    # ---------------- For reproducing results ------------------- #
-    optimizer = torch.optim.SGD(list(model_instance.c_net.parameters()), lr=0.001, momentum=0.9 ,weight_decay=0.0005, nesterov=True)
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 10, 0.8)
-    # ------------------------------------------------------------ #
-
     print('================== Learning rate =====================')
-    if args.training_step == '1-step':
-        print('lr = ', optimizer.param_groups[0]['lr'])
-    else:   
-        print('lr_G = ', optim_G.param_groups[0]['lr'])
-        print('lr_F = ', optim_F.param_groups[0]['lr'], optim_F_prime.param_groups[0]['lr'])
+    print('lr_G = ', optim_G.param_groups[0]['lr'])
+    print('lr_F = ', optim_F.param_groups[0]['lr'], optim_F_prime.param_groups[0]['lr'])
     print('======================================================')
     lr_sch_G = torch.optim.lr_scheduler.StepLR(optim_G, 10, 0.8)
     lr_sch_F = torch.optim.lr_scheduler.StepLR(optim_F, 10, 0.8)
@@ -109,8 +101,6 @@ def train(args, model_instance, train_source_loader, train_target_loader, test_s
             inputs_source, labels_source = datas
             inputs_target, _ = datat
 
-            # ---------------- For reproducing results ------------------- #
-            optimizer.zero_grad()
 
             if use_ssda:
                 inputs = torch.cat((inputs_source, inputs_target_l, inputs_target), dim=0)
@@ -125,8 +115,7 @@ def train(args, model_instance, train_source_loader, train_target_loader, test_s
             # Training 
             if args.lower_bound:
                 ## Step 0: If training lower bound, we can update G & F together
-                cls_loss, dis_loss = model_instance.get_loss(inputs, cls_gt, len(inputs_source), \
-                                                             args.use_oracle_IW, true_weights, source_weight)
+                cls_loss, dis_loss = model_instance.get_loss(inputs, cls_gt, len(inputs_source))
 
                 loss = cls_loss
                 optim_F.zero_grad()
@@ -137,18 +126,15 @@ def train(args, model_instance, train_source_loader, train_target_loader, test_s
             elif args.training_step == '1-step':
                 cls_loss, dis_loss = model_instance.get_loss(inputs, cls_gt, len(inputs_source), \
                                                              args.use_oracle_IW, true_weights, source_weight)
-                #print(cls_loss.item(), dis_loss.item())
                 loss = cls_loss + args.eta_*dis_loss
 
+                optim_F.zero_grad()
+                optim_F_prime.zero_grad()
+                optim_G.zero_grad()
                 loss.backward()
-                optimizer.step()
-                #optim_F.zero_grad()
-                #optim_F_prime.zero_grad()
-                #optim_G.zero_grad()
-                #loss.backward()
-                #optim_F.step()
-                #optim_F_prime.step()
-                #optim_G.step()
+                optim_F.step()
+                optim_F_prime.step()
+                optim_G.step()
             elif args.training_step == '3-step':
                 ## Step 1: Update F by CE
                 cls_loss, dis_loss = model_instance.get_loss(inputs, cls_gt, len(inputs_source), \
@@ -183,11 +169,8 @@ def train(args, model_instance, train_source_loader, train_target_loader, test_s
             # val
             if iter_num % eval_interval == 0 and iter_num != 0:
                 print("===================================")
-                if args.training_step == '1-step':
-                    print('lr = ', optimizer.param_groups[0]['lr'])
-                else:   
-                    print('lr_G = ', optim_G.param_groups[0]['lr'])
-                    print('lr_F = ', optim_F.param_groups[0]['lr'], optim_F_prime.param_groups[0]['lr'])
+                print('lr_G = ', optim_G.param_groups[0]['lr'])
+                print('lr_F = ', optim_F.param_groups[0]['lr'], optim_F_prime.param_groups[0]['lr'])
                 print('Classifier loss = ', cls_loss.item(), ' ; Discrepency loss = ', dis_loss.item())
                 print("Stest")
                 eval_result = evaluate(model_instance, test_source_loader, num_classes=num_classes)
@@ -195,12 +178,9 @@ def train(args, model_instance, train_source_loader, train_target_loader, test_s
                 print("Ttest")
                 eval_result = evaluate(model_instance, test_target_loader, num_classes=num_classes)
                 torch.save(model_instance.c_net.state_dict(), osp.join(args.save, str(int(eval_result['accuracy'].item()*100))+'.pth'))
-                if args.training_step == '1-step':
-                    lr_scheduler.step()
-                else:
-                    lr_sch_G.step()
-                    lr_sch_F.step()
-                    lr_sch_F_prime.step()
+                lr_sch_G.step()
+                lr_sch_F.step()
+                lr_sch_F_prime.step()
 
             iter_num += 1
             total_progress_bar.update(1)
